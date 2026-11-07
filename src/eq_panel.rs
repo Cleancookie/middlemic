@@ -358,10 +358,21 @@ fn smooth(shown: &mut [f32], measured: &[f32], fall: f32) {
 
 fn knob_row(ui: &mut Ui, section: &Section) {
     ui.horizontal_wrapped(|ui| {
+        let gap = ui.spacing().item_spacing.x;
+        let margin = ui.spacing().window_margin.sum().x + 2.0;
         for (i, band) in BANDS.iter().enumerate() {
+            // horizontal_wrapped cannot size a group before drawing it, so wrap by hand.
+            let knobs = 1.0 + band.gain.is_some() as u8 as f32;
+            let card = knobs * crate::knob::WIDTH + (knobs - 1.0) * gap + margin;
+            if i > 0 && ui.available_width() < card {
+                ui.end_row();
+            }
             ui.group(|ui| {
                 ui.vertical(|ui| {
-                    ui.colored_label(BAND_COLORS[i], format!("{} {}", i + 1, band.label));
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(format!("{} {}", i + 1, band.label)).color(BAND_COLORS[i]))
+                            .wrap_mode(egui::TextWrapMode::Extend),
+                    );
                     ui.horizontal(|ui| {
                         knob(ui, &section.params[band.freq], "Freq", BAND_COLORS[i]);
                         if let Some(gain) = band.gain {
