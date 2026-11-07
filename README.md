@@ -72,6 +72,10 @@ cargo build --release --target x86_64-pc-windows-gnu
 cargo test
 ```
 
+Or with make: `make build`, `make test`, and `make open`, which builds if anything changed
+and then starts the window on Windows (WSL only). Each `make open` starts another copy, so
+close the old window first.
+
 ## Use
 
 ```sh
