@@ -1,10 +1,11 @@
 //! Simple egui front end: pick devices, start/stop, adjust each stage.
 
 use crate::audio::{self, Devices, Engine};
-use crate::settings::{Section, Settings};
+use crate::settings::{Param, Section, Settings};
 use crate::setup::{self, Progress};
 use eframe::egui;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -334,10 +335,16 @@ fn section_ui(ui: &mut egui::Ui, section: &Section, open: bool) {
             ui.horizontal(|ui| {
                 let mut on = section.is_enabled();
                 if ui.checkbox(&mut on, "On").changed() {
-                    section.enabled.store(on, std::sync::atomic::Ordering::Relaxed);
+                    section.enabled.store(on, Ordering::Relaxed);
                 }
                 if ui.small_button("Reset").clicked() {
                     section.reset();
+                }
+                if !section.simple.is_empty() {
+                    let mut advanced = section.advanced.load(Ordering::Relaxed);
+                    if ui.checkbox(&mut advanced, "Advanced").changed() {
+                        section.advanced.store(advanced, Ordering::Relaxed);
+                    }
                 }
             });
             if !reductions.is_empty() {
@@ -355,7 +362,21 @@ fn section_ui(ui: &mut egui::Ui, section: &Section, open: bool) {
             }
             ui.add_enabled_ui(section.is_enabled(), |ui| {
                 ui.spacing_mut().slider_width = 220.0;
-                for p in &section.params {
+                let shown: &[Param] = if section.is_advanced() {
+                    &section.params
+                } else {
+                    &section.simple
+                };
+                if !section.is_advanced() && !section.quick_picks.is_empty() {
+                    ui.horizontal(|ui| {
+                        for (label, value) in &section.quick_picks {
+                            if ui.button(*label).clicked() {
+                                section.simple[0].set(*value);
+                            }
+                        }
+                    });
+                }
+                for p in shown {
                     let mut v = p.get();
                     let slider = egui::Slider::new(&mut v, p.min..=p.max)
                         .text(p.name)

@@ -64,6 +64,12 @@ pub struct Section {
     /// One label per gain-reduction meter this stage reports (empty for most stages).
     pub reduction_labels: Vec<&'static str>,
     reduction: Vec<AtomicU32>,
+    /// Few-dial alternative to `params`, for stages with a Simple mode. The stage derives
+    /// its settings from these until `advanced` is switched on.
+    pub simple: Vec<Param>,
+    /// Buttons that set the first simple parameter, e.g. ("Gentle", 25.0).
+    pub quick_picks: Vec<(&'static str, f32)>,
+    pub advanced: AtomicBool,
 }
 
 impl Section {
@@ -74,7 +80,22 @@ impl Section {
             params,
             reduction_labels: Vec::new(),
             reduction: Vec::new(),
+            simple: Vec::new(),
+            quick_picks: Vec::new(),
+            advanced: AtomicBool::new(false),
         }
+    }
+
+    /// Give the stage a Simple mode. It starts in Simple; `params` become the Advanced view.
+    pub fn with_simple(mut self, simple: Vec<Param>, quick_picks: &[(&'static str, f32)]) -> Self {
+        self.simple = simple;
+        self.quick_picks = quick_picks.to_vec();
+        self
+    }
+
+    /// True when the stage should read `params`. Stages without a Simple mode are always advanced.
+    pub fn is_advanced(&self) -> bool {
+        self.simple.is_empty() || self.advanced.load(Relaxed)
     }
 
     /// Give the stage gain-reduction meters, one per label.
@@ -103,7 +124,8 @@ impl Section {
 
     pub fn reset(&self) {
         self.enabled.store(true, Relaxed);
-        self.params.iter().for_each(Param::reset);
+        self.advanced.store(false, Relaxed);
+        self.params.iter().chain(&self.simple).for_each(Param::reset);
     }
 }
 
@@ -187,7 +209,10 @@ impl Settings {
         }
         for section in &self.sections {
             out.push_str(&format!("\n[{}]\nenabled={}\n", section.name, section.is_enabled()));
-            for p in &section.params {
+            if !section.simple.is_empty() {
+                out.push_str(&format!("advanced={}\n", section.advanced.load(Relaxed)));
+            }
+            for p in section.simple.iter().chain(&section.params) {
                 out.push_str(&format!("{}={}\n", p.name, p.get()));
             }
         }
@@ -215,10 +240,14 @@ impl Settings {
                         section.enabled.store(v, Relaxed);
                     }
                 }
+                Some(section) if key == "advanced" => {
+                    if let Ok(v) = value.parse() {
+                        section.advanced.store(v, Relaxed);
+                    }
+                }
                 Some(section) => {
-                    if let (Some(p), Ok(v)) =
-                        (section.params.iter().find(|p| p.name == key), value.parse())
-                    {
+                    let found = section.simple.iter().chain(&section.params).find(|p| p.name == key);
+                    if let (Some(p), Ok(v)) = (found, value.parse()) {
                         p.set(v);
                     }
                 }
@@ -265,6 +294,36 @@ mod tests {
         let s = settings();
         s.apply_text("[Nope]\nBoost=9\n[EQ]\nBoost=abc\nwhat\n");
         assert_eq!(s.section("EQ").params[0].get(), 5.0);
+    }
+
+    #[test]
+    fn simple_mode_round_trips_and_resets() {
+        let make = || {
+            Settings::new(vec![
+                Section::new("C", vec![Param::new("Ratio", ":1", 1.0, 10.0, 2.0)])
+                    .with_simple(vec![Param::new("Amount", "%", 0.0, 100.0, 50.0)], &[("Gentle", 25.0)]),
+            ])
+        };
+        let a = make();
+        assert!(!a.section("C").is_advanced(), "starts in simple mode");
+        a.section("C").simple[0].set(80.0);
+        a.section("C").advanced.store(true, Relaxed);
+        a.section("C").params[0].set(6.0);
+
+        let b = make();
+        b.apply_text(&a.to_text(&[]));
+        assert!(b.section("C").is_advanced());
+        assert_eq!(b.section("C").simple[0].get(), 80.0);
+        assert_eq!(b.section("C").params[0].get(), 6.0);
+
+        b.reset();
+        assert!(!b.section("C").is_advanced());
+        assert_eq!(b.section("C").simple[0].get(), 50.0);
+    }
+
+    #[test]
+    fn stages_without_simple_mode_are_always_advanced() {
+        assert!(Section::new("EQ", vec![]).is_advanced());
     }
 
     #[test]

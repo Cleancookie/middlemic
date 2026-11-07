@@ -31,7 +31,38 @@ pub fn section() -> Section {
     params.extend(band("Low threshold", "Low ratio", "Low makeup", 2.5));
     params.extend(band("Mid threshold", "Mid ratio", "Mid makeup", 3.0));
     params.extend(band("High threshold", "High ratio", "High makeup", 2.0));
-    Section::new(NAME, params).with_reduction_meters(&["Low", "Mid", "High"])
+    Section::new(NAME, params)
+        .with_reduction_meters(&["Low", "Mid", "High"])
+        .with_simple(
+            vec![Param::new("Amount", "%", 0.0, 100.0, 50.0)],
+            &[("Gentle", 25.0), ("Voice", 50.0), ("Strong", 80.0)],
+        )
+}
+
+#[derive(Clone, Copy)]
+struct Band {
+    threshold: f32,
+    ratio: f32,
+    makeup_db: f32,
+}
+
+/// One "Amount" (0..1) becomes all three bands. The low and high bands work a little
+/// less hard than the mid, where most of the voice is. Make-up gain rises with the amount
+/// so turning it up does not make the voice quieter.
+fn simple_bands(amount: f32) -> [Band; 3] {
+    let a = amount.clamp(0.0, 1.0);
+    let lerp = |from: f32, to: f32| from + (to - from) * a;
+    let edge = Band {
+        threshold: lerp(-8.0, -34.0),
+        ratio: lerp(1.3, 3.0),
+        makeup_db: lerp(0.0, 4.0),
+    };
+    let mid = Band {
+        threshold: lerp(-6.0, -36.0),
+        ratio: lerp(1.5, 4.0),
+        makeup_db: lerp(0.0, 6.0),
+    };
+    [edge, mid, edge]
 }
 
 /// Three-band compressor. Bands are split with Linkwitz-Riley crossovers and the low band is
@@ -72,20 +103,34 @@ impl Processor for Multiband {
 
     fn process(&mut self, samples: &mut [f32]) {
         let s = &self.section;
-        let high_xover = s.get(HIGH_XOVER);
-        self.low_split.set_freq(self.fs, s.get(LOW_XOVER));
+        let advanced = s.is_advanced();
+        // Simple mode keeps the crossovers and times at their defaults.
+        let value = |i: usize| if advanced { s.get(i) } else { s.params[i].default };
+        let high_xover = value(HIGH_XOVER);
+        self.low_split.set_freq(self.fs, value(LOW_XOVER));
         self.high_split.set_freq(self.fs, high_xover);
         self.low_align.set_freq(self.fs, high_xover);
 
-        let (attack, release) = (s.get(ATTACK), s.get(RELEASE));
+        let bands: [Band; 3] = if advanced {
+            std::array::from_fn(|band| {
+                let at = BANDS_AT + band * PER_BAND;
+                Band {
+                    threshold: s.get(at),
+                    ratio: s.get(at + 1),
+                    makeup_db: s.get(at + 2),
+                }
+            })
+        } else {
+            simple_bands(s.simple[0].get() / 100.0)
+        };
+        let (attack, release) = (value(ATTACK), value(RELEASE));
         let mut threshold = [0.0; 3];
         let mut ratio = [1.0; 3];
         let mut makeup = [1.0; 3];
-        for band in 0..3 {
-            let at = BANDS_AT + band * PER_BAND;
-            threshold[band] = s.get(at);
-            ratio[band] = s.get(at + 1);
-            makeup[band] = 10f32.powf(s.get(at + 2) / 20.0);
+        for (band, b) in bands.iter().enumerate() {
+            threshold[band] = b.threshold;
+            ratio[band] = b.ratio;
+            makeup[band] = 10f32.powf(b.makeup_db / 20.0);
             self.comps[band].set_times(self.fs, attack, release);
         }
 
@@ -114,6 +159,18 @@ mod tests {
     use super::*;
     use crate::dsp::testutil::{rms, sine};
 
+    fn advanced() -> Section {
+        let s = section();
+        s.advanced.store(true, std::sync::atomic::Ordering::Relaxed);
+        s
+    }
+
+    fn simple_at(amount: f32) -> Section {
+        let s = section();
+        s.simple[0].set(amount);
+        s
+    }
+
     fn run(freq: f32, amp: f32, section: Section) -> f32 {
         let mut m = Multiband::new(Arc::new(section));
         m.prepare(48_000);
@@ -125,7 +182,7 @@ mod tests {
     #[test]
     fn quiet_signal_passes_flat() {
         for freq in [100.0, 1_000.0, 6_000.0] {
-            let r = run(freq, 0.01, section());
+            let r = run(freq, 0.01, advanced());
             assert!((r - 1.0).abs() < 0.05, "{freq} Hz: {r}");
         }
     }
@@ -133,14 +190,14 @@ mod tests {
     #[test]
     fn loud_signal_is_compressed_in_its_own_band() {
         for freq in [100.0, 1_000.0, 6_000.0] {
-            let r = run(freq, 0.5, section());
+            let r = run(freq, 0.5, advanced());
             assert!(r < 0.85, "{freq} Hz was not compressed: {r}");
         }
     }
 
     #[test]
     fn meters_show_which_band_is_working() {
-        let s = Arc::new(section());
+        let s = Arc::new(advanced());
         let mut m = Multiband::new(s.clone());
         m.prepare(48_000);
         m.process(&mut sine(1_000.0, 48_000, 0.5));
@@ -150,8 +207,37 @@ mod tests {
     }
 
     #[test]
+    fn simple_mode_is_the_default_and_compresses() {
+        assert!(!section().is_advanced());
+        let r = run(1_000.0, 0.5, section());
+        assert!(r < 0.9, "default Amount did not compress a loud tone: {r}");
+    }
+
+    #[test]
+    fn higher_amount_compresses_harder() {
+        // Make-up gain grows with Amount, so compare the meter, not the output level.
+        let reduction_db = |amount: f32| {
+            let s = Arc::new(simple_at(amount));
+            let mut m = Multiband::new(s.clone());
+            m.prepare(48_000);
+            m.process(&mut sine(1_000.0, 96_000, 0.5));
+            s.take_reduction(1)
+        };
+        assert!(reduction_db(0.0) < 1.0);
+        assert!(reduction_db(50.0) > reduction_db(0.0) + 3.0);
+        assert!(reduction_db(100.0) > reduction_db(50.0) + 3.0);
+    }
+
+    #[test]
+    fn simple_quiet_voice_is_not_squashed_flat() {
+        // Quiet speech sits under the threshold, so only make-up gain applies (at most +6 dB).
+        let r = run(1_000.0, 0.01, simple_at(100.0));
+        assert!(r > 1.0 && r < 2.1, "{r}");
+    }
+
+    #[test]
     fn makeup_gain_raises_the_band() {
-        let s = section();
+        let s = advanced();
         s.params[BANDS_AT + PER_BAND + 2].set(6.0); // mid makeup
         let r = run(1_000.0, 0.01, s);
         assert!(r > 1.8, "{r}");
