@@ -6,6 +6,7 @@ use crate::dsp;
 use crate::eq_panel::EqPanel;
 use crate::rack::{Rack, section_body};
 use crate::settings::Settings;
+use crate::theme;
 use crate::setup::{self, Progress};
 use eframe::egui;
 use std::path::PathBuf;
@@ -16,8 +17,9 @@ const SYSTEM_DEFAULT: &str = "System default";
 const SAVE_EVERY: Duration = Duration::from_secs(1);
 /// Meters fall at this fraction per redraw.
 const METER_DECAY: f32 = 0.85;
-/// Narrower than this (in points, so DPI and zoom are already counted) the device bars use two rows.
-const WIDE: f32 = 620.0;
+/// Narrower than this (in points, so DPI and zoom are already counted) the top bar uses two rows.
+const WIDE: f32 = 760.0;
+const LEVEL_WIDTH: f32 = 90.0;
 
 pub fn run(settings: Arc<Settings>) -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -34,7 +36,10 @@ pub fn run(settings: Arc<Settings>) -> eframe::Result {
     eframe::run_native(
         "middlemic",
         options,
-        Box::new(|_cc| Ok(Box::new(App::new(settings)))),
+        Box::new(|cc| {
+            theme::apply(&cc.egui_ctx);
+            Ok(Box::new(App::new(settings)))
+        }),
     )
 }
 
@@ -104,6 +109,7 @@ struct App {
     saved_text: String,
     last_save: Instant,
     cpu: CpuMeter,
+    banner_dismissed: bool,
 }
 
 impl App {
@@ -145,6 +151,7 @@ impl App {
             saved_text: saved,
             last_save: Instant::now(),
             cpu: CpuMeter::new(),
+            banner_dismissed: false,
         };
         if app.output.is_empty() {
             app.status = "Pick an output device (a virtual cable such as CABLE Input).".into();
@@ -193,32 +200,27 @@ impl App {
         }
     }
 
-    /// A device bar: title, device picker and level on the left, actions on the right.
-    /// Below `WIDE` points the actions drop to a second row so nothing clips.
-    fn device_bar(
-        &mut self,
-        ui: &mut egui::Ui,
-        title: &str,
-        level: f32,
-        picker: fn(&mut Self, &mut egui::Ui, f32),
-        actions: fn(&mut Self, &mut egui::Ui),
-    ) {
+    /// input ⟳ | output ⟳ | levels | CPU | start. Below `WIDE` points the readouts wrap to a second row.
+    fn top_bar(&mut self, ui: &mut egui::Ui) {
         let width = ui.available_width();
         let wide = width >= WIDE;
-        let picker_width = if wide { (width * 0.4).clamp(160.0, 380.0) } else { width - 90.0 };
+        let picker = if wide { (width - 420.0) / 2.0 } else { width / 2.0 - 70.0 }.clamp(100.0, 320.0);
         ui.horizontal(|ui| {
-            ui.add_sized([60.0, ui.spacing().interact_size.y], egui::Label::new(egui::RichText::new(title).strong()));
-            ui.add_enabled_ui(!self.running(), |ui| picker(self, ui, picker_width.max(100.0)));
+            let locked = self.running();
+            ui.add_enabled_ui(!locked, |ui| {
+                self.input_picker(ui, picker);
+                self.refresh_button(ui);
+                ui.separator();
+                self.output_picker(ui, picker);
+                self.refresh_button(ui);
+            });
             if wide {
-                level_bar(ui, (width * 0.15).clamp(60.0, 200.0), level);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| actions(self, ui));
+                ui.separator();
+                self.readouts(ui);
             }
         });
         if !wide {
-            ui.horizontal(|ui| {
-                level_bar(ui, (width * 0.35).clamp(60.0, 200.0), level);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| actions(self, ui));
-            });
+            ui.horizontal(|ui| self.readouts(ui));
         }
     }
 
@@ -232,54 +234,82 @@ impl App {
                 for name in &self.devices.inputs {
                     ui.selectable_value(&mut self.input, name.clone(), name);
                 }
-            });
-    }
-
-    fn input_actions(&mut self, ui: &mut egui::Ui) {
-        let locked = self.running();
-        if locked {
-            if ui.button("Stop").clicked() {
-                self.stop();
-            }
-        } else if ui
-            .add_enabled(!self.output.is_empty(), egui::Button::new("Start"))
-            .clicked()
-        {
-            self.start();
-        }
-        if ui
-            .add_enabled(!locked, egui::Button::new("⟳"))
-            .on_hover_text("Refresh devices")
-            .clicked()
-        {
-            if let Ok(devices) = audio::list_devices() {
-                self.devices = devices;
-            }
-        }
-        if ui.button("Reset all").clicked() {
-            self.settings.reset();
-        }
+            })
+            .response
+            .on_hover_text("Input: your microphone");
     }
 
     fn output_picker(&mut self, ui: &mut egui::Ui, width: f32) {
         egui::ComboBox::from_id_salt("output")
             .width(width)
             .truncate()
-            .selected_text(if self.output.is_empty() { "Choose…" } else { &self.output })
+            .selected_text(if self.output.is_empty() { "Choose output…" } else { &self.output })
             .show_ui(ui, |ui| {
                 for name in &self.devices.outputs {
                     ui.selectable_value(&mut self.output, name.clone(), name);
                 }
-            });
+            })
+            .response
+            .on_hover_text("Output: where the cleaned mic goes, usually CABLE Input");
     }
 
-    fn output_actions(&mut self, ui: &mut egui::Ui) {
-        if ui
-            .add_enabled(!self.running(), egui::Button::new("Set up VB-CABLE…"))
-            .clicked()
-        {
-            self.setup = SetupState::Confirm;
+    fn refresh_button(&mut self, ui: &mut egui::Ui) {
+        if ui.button("⟳").on_hover_text("Refresh devices").clicked() {
+            if let Ok(devices) = audio::list_devices() {
+                self.devices = devices;
+            }
         }
+    }
+
+    /// levels | CPU | start, with start pinned to the right edge.
+    fn readouts(&mut self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 3.0;
+            level_bar(ui, self.in_level).on_hover_text("Input level");
+            level_bar(ui, self.out_level).on_hover_text("Output level");
+        });
+        ui.separator();
+        let cpu = self.cpu.percent();
+        let meters = &self.settings.meters;
+        let detail = if self.running() {
+            format!(
+                "Whole app, as a share of all cores (as Task Manager shows it)\n\
+                 DSP {:.1}% of one core\nDelay ~{:.0} ms plus a 50 ms cushion and device buffers\nAudio gaps: {}",
+                meters.load() * 100.0,
+                meters.latency_ms(),
+                meters.dropouts()
+            )
+        } else {
+            "Whole app, as a share of all cores (as Task Manager shows it)".to_string()
+        };
+        ui.label(format!("CPU {cpu:.1}%")).on_hover_text(detail);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if self.running() {
+                if ui.button("Stop").clicked() {
+                    self.stop();
+                }
+            } else if ui
+                .add_enabled(!self.output.is_empty(), egui::Button::new("Start"))
+                .clicked()
+            {
+                self.start();
+            }
+        });
+    }
+
+    /// Shown on every launch until dismissed, while no virtual cable is installed.
+    fn cable_banner(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.colored_label(theme::WARN, "Discord and games need a virtual cable to hear middlemic.");
+            if ui.add_enabled(!self.running(), egui::Button::new("Set up VB-CABLE…")).clicked() {
+                self.setup = SetupState::Confirm;
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("✕").on_hover_text("Hide until next launch").clicked() {
+                    self.banner_dismissed = true;
+                }
+            });
+        });
     }
 
     /// Re-list devices, and point the output at the cable if it is there.
@@ -376,28 +406,10 @@ impl App {
         self.out_level = to_frac(meters.take_output()).max(self.out_level * METER_DECAY);
     }
 
-    /// Footer: what the app costs, how late the audio is, and any error.
-    fn status_bar(&mut self, ui: &mut egui::Ui) {
-        let cpu = self.cpu.percent();
-        let meters = &self.settings.meters;
-        ui.horizontal_wrapped(|ui| {
-            ui.weak(format!("CPU {cpu:.1}%"))
-                .on_hover_text("Whole app, as a share of all cores (as Task Manager shows it)");
-            if self.running() {
-                ui.weak(format!("· DSP {:.1}% of one core", meters.load() * 100.0));
-                ui.weak(format!("· delay ~{:.0} ms", meters.latency_ms()))
-                    .on_hover_text("Chain delay, plus a 50 ms cushion and device buffers");
-                ui.weak(format!("· gaps {}", meters.dropouts()));
-            }
-            if !self.status.is_empty() {
-                ui.colored_label(egui::Color32::LIGHT_RED, &self.status);
-            }
-        });
-    }
 }
 
-fn level_bar(ui: &mut egui::Ui, width: f32, level: f32) {
-    ui.add(egui::ProgressBar::new(level).desired_width(width).desired_height(8.0));
+fn level_bar(ui: &mut egui::Ui, level: f32) -> egui::Response {
+    ui.add(egui::ProgressBar::new(level).desired_width(LEVEL_WIDTH).desired_height(5.0))
 }
 
 impl eframe::App for App {
@@ -414,14 +426,13 @@ impl eframe::App for App {
         self.setup_window(&ctx);
 
         self.update_levels();
-        let (in_level, out_level) = (self.in_level, self.out_level);
-        egui::Panel::top("input").show(ui, |ui| {
-            self.device_bar(ui, "INPUT", in_level, Self::input_picker, Self::input_actions)
-        });
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        egui::Panel::bottom("output").show(ui, |ui| {
-            self.device_bar(ui, "OUTPUT", out_level, Self::output_picker, Self::output_actions)
-        });
+        egui::Panel::top("devices").show(ui, |ui| self.top_bar(ui));
+        if !self.banner_dismissed && !setup::cable_present(&self.devices.outputs) {
+            egui::Panel::top("cable_banner").show(ui, |ui| self.cable_banner(ui));
+        }
+        if !self.status.is_empty() {
+            egui::Panel::top("status").show(ui, |ui| ui.colored_label(theme::ERROR, &self.status));
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             let running = self.running();
             self.eq_panel.update(&self.settings.meters, running);
@@ -441,6 +452,10 @@ impl eframe::App for App {
                         section_body(ui, section, reductions);
                     }
                 });
+                ui.add_space(8.0);
+                if ui.small_button("Reset all stages").clicked() {
+                    self.settings.reset();
+                }
             });
         });
 
