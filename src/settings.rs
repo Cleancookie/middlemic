@@ -85,10 +85,20 @@ impl Param {
             "Hz" if v >= 1000.0 => format!("{:.2} kHz", v / 1000.0),
             "Hz" => format!("{v:.0} Hz"),
             "dB" if self.min < 0.0 => format!("{v:+.1} dB"),
+            "1:" => format!("1:{v:.1}"),
             "" => format!("{v:.1}"),
             unit => format!("{v:.1} {unit}"),
         }
     }
+}
+
+/// Non-negative floats order like their bits, so `fetch_max` keeps the largest.
+fn keep_max(slot: &AtomicU32, value: f32) {
+    slot.fetch_max(value.max(0.0).to_bits(), Relaxed);
+}
+
+fn take(slot: &AtomicU32) -> f32 {
+    f32::from_bits(slot.swap(0, Relaxed))
 }
 
 /// One stage's controls: an on/off switch and its parameters.
@@ -100,6 +110,10 @@ pub struct Section {
     /// One label per gain-reduction meter this stage reports (empty for most stages).
     pub reduction_labels: Vec<&'static str>,
     reduction: Vec<AtomicU32>,
+    /// Peak levels (linear) the stage reports for its own display, by slot.
+    levels: Vec<AtomicU32>,
+    /// Names saved by older versions, each with the parameters it now sets.
+    renamed: Vec<(&'static str, &'static [&'static str])>,
     /// Few-dial alternative to `params`, for stages with a Simple mode. The stage derives
     /// its settings from these until `advanced` is switched on.
     pub simple: Vec<Param>,
@@ -121,6 +135,8 @@ impl Section {
             params,
             reduction_labels: Vec::new(),
             reduction: Vec::new(),
+            levels: Vec::new(),
+            renamed: Vec::new(),
             simple: Vec::new(),
             quick_picks: Vec::new(),
             advanced: AtomicBool::new(false),
@@ -179,11 +195,36 @@ impl Section {
 
     /// Keeps the largest reduction (dB, positive) since the UI last looked.
     pub fn record_reduction(&self, slot: usize, db: f32) {
-        self.reduction[slot].fetch_max(db.max(0.0).to_bits(), Relaxed);
+        keep_max(&self.reduction[slot], db);
     }
 
     pub fn take_reduction(&self, slot: usize) -> f32 {
-        f32::from_bits(self.reduction[slot].swap(0, Relaxed))
+        take(&self.reduction[slot])
+    }
+
+    /// Give the stage `count` level meters.
+    pub fn with_level_meters(mut self, count: usize) -> Self {
+        self.levels = (0..count).map(|_| AtomicU32::new(0)).collect();
+        self
+    }
+
+    /// Keeps the loudest peak (linear) since the UI last looked.
+    pub fn record_level(&self, slot: usize, peak: f32) {
+        keep_max(&self.levels[slot], peak);
+    }
+
+    pub fn take_level(&self, slot: usize) -> f32 {
+        take(&self.levels[slot])
+    }
+
+    pub fn level_meters(&self) -> usize {
+        self.levels.len()
+    }
+
+    /// Load values saved under `old` names into the parameters that replaced them.
+    pub fn with_renamed(mut self, renamed: &[(&'static str, &'static [&'static str])]) -> Self {
+        self.renamed = renamed.to_vec();
+        self
     }
 
     pub fn get(&self, index: usize) -> f32 {
@@ -419,8 +460,11 @@ fn apply_key(section: &Section, key: &str, value: &str) {
         "open" => &section.open,
         "advanced" => &section.advanced,
         _ => {
-            let found = section.simple.iter().chain(&section.params).find(|p| p.name == key);
-            if let (Some(p), Ok(v)) = (found, value.parse()) {
+            let Ok(v) = value.parse() else { return };
+            let key = [key];
+            let renamed = section.renamed.iter().find(|(old, _)| *old == key[0]);
+            let names = renamed.map_or(&key[..], |(_, new)| new);
+            for p in section.simple.iter().chain(&section.params).filter(|p| names.contains(&p.name)) {
                 p.set(v);
             }
             return;
