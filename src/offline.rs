@@ -129,8 +129,7 @@ mod tests {
     /// Runs `clip` through a chain in 10 ms frames, like the live engine. Returns the output
     /// and how long each frame took, in milliseconds.
     fn run(clip: &[f32], settings: &crate::settings::Settings) -> (Vec<f32>, Vec<f32>) {
-        let mut chain = crate::dsp::build_chain(settings, None).unwrap();
-        chain.prepare(48_000);
+        let mut chain = crate::dsp::build_chain(settings, None, 48_000).unwrap();
         let mut out = clip[..clip.len() / 480 * 480].to_vec();
         let mut times = Vec::with_capacity(out.len() / 480);
         for frame in out.chunks_exact_mut(480) {
@@ -142,8 +141,8 @@ mod tests {
     }
 
     fn only(settings: &crate::settings::Settings, keep: &[&str]) {
-        for s in &settings.sections {
-            s.enabled.store(keep.contains(&s.name), std::sync::atomic::Ordering::Relaxed);
+        for item in settings.items() {
+            item.section.enabled.store(keep.contains(&item.name.as_str()), std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -210,7 +209,7 @@ mod tests {
                 }),
             ),
             ("everything except noise removal", Box::new(|s| {
-                let all: Vec<&str> = s.sections.iter().map(|x| x.name).filter(|n| *n != "Noise removal").collect();
+                let all: Vec<&str> = crate::dsp::kinds().filter(|n| *n != "Noise removal").collect();
                 only(s, &all);
             })),
             ("full default chain", Box::new(|_| {})),

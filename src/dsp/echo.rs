@@ -6,9 +6,13 @@ use ringbuf::{
 };
 use sonora::config::EchoCanceller;
 use sonora::{AudioProcessing, Config, StreamConfig};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub const NAME: &str = "Echo cancellation";
+
+/// The audio going to the speakers. Shared so a rebuilt or second echo stage can read it;
+/// only the DSP thread ever locks it.
+pub type Reference = Arc<Mutex<HeapCons<f32>>>;
 
 const SAMPLE_RATE: u32 = 48_000;
 /// 10 ms, the only frame size the canceller takes.
@@ -30,13 +34,13 @@ pub fn section() -> Section {
 pub struct EchoCancel {
     section: Arc<Section>,
     apm: AudioProcessing,
-    reference: Option<HeapCons<f32>>,
+    reference: Option<Reference>,
     far: [f32; FRAME],
     out: [f32; FRAME],
 }
 
 impl EchoCancel {
-    pub fn new(section: Arc<Section>, reference: Option<HeapCons<f32>>) -> Self {
+    pub fn new(section: Arc<Section>, reference: Option<Reference>) -> Self {
         let stream = StreamConfig::new(SAMPLE_RATE, 1);
         let config = Config {
             echo_canceller: Some(EchoCanceller::default()),
@@ -60,7 +64,7 @@ impl EchoCancel {
     /// delivers nothing while the speakers are quiet).
     fn next_reference(&mut self) {
         self.far.fill(0.0);
-        let Some(ring) = self.reference.as_mut() else {
+        let Some(Ok(mut ring)) = self.reference.as_ref().map(|r| r.lock()) else {
             return;
         };
         let backlog = ring.occupied_len();
@@ -134,7 +138,7 @@ mod tests {
     /// Run the mic through the stage, handing it the matching far-end frame each time.
     fn run(mic: &[f32], far: &[f32]) -> Vec<f32> {
         let (mut prod, cons) = HeapRb::<f32>::new(far.len()).split();
-        let mut stage = EchoCancel::new(Arc::new(section()), Some(cons));
+        let mut stage = EchoCancel::new(Arc::new(section()), Some(Arc::new(Mutex::new(cons))));
         let mut out = mic.to_vec();
         for (m, f) in out.chunks_exact_mut(FRAME).zip(far.chunks_exact(FRAME)) {
             prod.push_slice(f);

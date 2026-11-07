@@ -156,7 +156,8 @@ impl EqPanel {
         self.texture_stale = true;
     }
 
-    pub fn ui(&mut self, ui: &mut Ui, section: &Section, deesser_hz: f32) {
+    /// `deesser_hz` marks where a de-esser after this EQ starts working, if there is one.
+    pub fn ui(&mut self, ui: &mut Ui, section: &Section, deesser_hz: Option<f32>) {
         ui.weak("grey line: mic in · blue: after the whole chain · drag the dots");
         self.plot(ui, section);
         knob_row(ui, section);
@@ -271,7 +272,7 @@ impl EqPanel {
         }
     }
 
-    fn spectrogram_view(&mut self, ui: &mut Ui, deesser_hz: f32) {
+    fn spectrogram_view(&mut self, ui: &mut Ui, deesser_hz: Option<f32>) {
         if self.texture_stale || self.texture.is_none() {
             let image = ColorImage::from_rgba_unmultiplied([SG_WIDTH, SG_HEIGHT], &self.spectrogram);
             match &mut self.texture {
@@ -307,20 +308,22 @@ impl EqPanel {
                 Color32::from_gray(190),
             );
         }
-        let y = y_of(deesser_hz.clamp(MIN_HZ, MAX_HZ));
-        painter.extend(Shape::dashed_line(
-            &[pos2(rect.left() + 40.0, y), pos2(rect.right(), y)],
-            Stroke::new(1.0, theme::DEESSER),
-            5.0,
-            4.0,
-        ));
-        painter.text(
-            pos2(rect.right() - 4.0, y - 2.0),
-            Align2::RIGHT_BOTTOM,
-            "de-esser starts here",
-            FontId::proportional(10.0),
-            theme::DEESSER,
-        );
+        if let Some(hz) = deesser_hz {
+            let y = y_of(hz.clamp(MIN_HZ, MAX_HZ));
+            painter.extend(Shape::dashed_line(
+                &[pos2(rect.left() + 40.0, y), pos2(rect.right(), y)],
+                Stroke::new(1.0, theme::DEESSER),
+                5.0,
+                4.0,
+            ));
+            painter.text(
+                pos2(rect.right() - 4.0, y - 2.0),
+                Align2::RIGHT_BOTTOM,
+                "de-esser starts here",
+                FontId::proportional(10.0),
+                theme::DEESSER,
+            );
+        }
         painter.text(
             pos2(rect.right() - 4.0, rect.top() + 3.0),
             Align2::RIGHT_TOP,
@@ -377,7 +380,7 @@ mod tests {
 
     fn draw(panel: &mut EqPanel, section: &Section) -> usize {
         let ctx = egui::Context::default();
-        ctx.run_ui(egui::RawInput::default(), |ui| panel.ui(ui, section, 6_500.0))
+        ctx.run_ui(egui::RawInput::default(), |ui| panel.ui(ui, section, Some(6_500.0)))
             .shapes
             .len()
     }
@@ -411,7 +414,7 @@ mod tests {
             events,
             ..Default::default()
         };
-        let _ = ctx.run_ui(input, |ui| panel.ui(ui, section, 6_500.0));
+        let _ = ctx.run_ui(input, |ui| panel.ui(ui, section, Some(6_500.0)));
     }
 
     fn press(pos: Pos2, pressed: bool) -> egui::Event {

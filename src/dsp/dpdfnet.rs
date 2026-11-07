@@ -285,8 +285,12 @@ impl Processor for DpdfNet {
         self.section.is_enabled()
     }
 
+    /// Loads the model here, so a stage built off the audio thread arrives ready.
     fn prepare(&mut self, sample_rate: u32) {
         assert_eq!(sample_rate, SAMPLE_RATE, "DPDFNet needs 48 kHz");
+        if self.should_look_for_model() {
+            self.load();
+        }
     }
 
     fn process(&mut self, samples: &mut [f32]) {

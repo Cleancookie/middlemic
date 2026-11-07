@@ -470,15 +470,16 @@ impl eframe::App for App {
             let running = self.running();
             self.eq_panel.update(&self.settings.meters, running);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let deesser_hz = dsp::deesser_frequency_hz(&self.settings.section(dsp::DEESSER_NAME));
-                // The rack, in running order. Only the EQ has a custom body.
+                // The rack, in running order. Only EQs have a custom body; they share the spectrum.
                 let settings = Arc::clone(&self.settings);
+                let items = settings.items();
                 let eq_panel = &mut self.eq_panel;
                 let model_download = &mut self.model_download;
-                self.rack.show(ui, &settings, |ui, section, reductions| {
-                    if section.name == dsp::EQ_NAME {
-                        eq_panel.ui(ui, section, deesser_hz);
-                    } else if section.name == dsp::DPDFNET.name {
+                self.rack.show(ui, &settings, |ui, item, reductions| {
+                    let section = &item.section;
+                    if item.kind() == dsp::EQ_NAME {
+                        eq_panel.ui(ui, section, dsp::deesser_after(&items, item.id));
+                    } else if item.kind() == dsp::DPDFNET.name {
                         model_row(ui, model_download);
                         section_body(ui, section, reductions);
                     } else {

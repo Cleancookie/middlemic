@@ -1,9 +1,9 @@
 //! The stage list, laid out like an FX chain rack: one framed row per stage with a fold
 //! arrow, bypass switch, name and live readout, and the stage's controls when unfolded.
 
-use crate::settings::{Param, Section, Settings, moved};
+use crate::settings::{Item, Param, Removed, Section, Settings};
 use crate::theme;
-use egui::{Align, Color32, CursorIcon, Id, Layout, Rect, Response, Sense, Shape, Stroke, Ui, UiBuilder, pos2, vec2};
+use egui::{Align, Align2, Color32, CursorIcon, FontId, Id, Layout, Rect, Response, Sense, Shape, Stroke, Ui, UiBuilder, pos2, vec2};
 use std::f32::consts::FRAC_PI_2;
 use std::sync::atomic::Ordering;
 
@@ -11,12 +11,14 @@ use std::sync::atomic::Ordering;
 const REDUCTION_RANGE_DB: f32 = 24.0;
 /// Below this the header shows nothing, so it only lights up when the stage is working.
 const REDUCTION_SHOWN_DB: f32 = 0.5;
+/// How long "Undo" stays offered after a stage is removed.
+const UNDO_SECONDS: f64 = 5.0;
 
 /// Meter readings reset when taken, and egui may run the UI more than once per frame, so
 /// take them once per frame and give every pass the same values.
 fn reductions_this_frame(ui: &Ui, section: &Section) -> Vec<f32> {
     let frame = ui.ctx().cumulative_frame_nr();
-    let key = ui.make_persistent_id((section.name, "reduction-readings"));
+    let key = ui.make_persistent_id("reduction-readings");
     ui.ctx().data_mut(|data| {
         let (taken_in, readings) = data.get_temp_mut_or_insert_with(key, || (u64::MAX, Vec::<f32>::new()));
         if *taken_in != frame {
@@ -35,6 +37,7 @@ pub struct RackHeader {
     pub grip: Response,
     pub arrow: Response,
     pub power: Response,
+    pub remove: Response,
     /// The whole row, header and body.
     pub rect: Rect,
 }
@@ -117,13 +120,19 @@ fn gap_line_y(gap: usize, rows: &[Rect]) -> f32 {
 const ROW_RADIUS: u8 = 8;
 
 /// One row of the rack, outlined in `accent` (grey when bypassed). `body` runs only when
-/// unfolded and gets the gain reduction (dB) of each of the stage's meters.
-pub fn rack_item(ui: &mut Ui, section: &Section, accent: Color32, body: impl FnOnce(&mut Ui, &[f32])) -> RackHeader {
+/// unfolded and gets the gain reduction (dB) of each of the stage's meters. Widget ids inside
+/// are scoped to the item, so two stages of one kind never share state.
+pub fn rack_item(ui: &mut Ui, item: &Item, accent: Color32, body: impl FnOnce(&mut Ui, &[f32])) -> RackHeader {
+    ui.push_id(("rack-item", item.id), |ui| item_row(ui, item, accent, body)).inner
+}
+
+fn item_row(ui: &mut Ui, item: &Item, accent: Color32, body: impl FnOnce(&mut Ui, &[f32])) -> RackHeader {
+    let section = &item.section;
     let reductions = reductions_this_frame(ui, section);
     let worst = reductions.iter().copied().fold(0.0, f32::max);
     let open = section.open.load(Ordering::Relaxed);
     let on = section.is_enabled();
-    let id = ui.make_persistent_id(section.name);
+    let id = ui.make_persistent_id("row");
     let ctx = ui.ctx().clone();
     let open_t = theme::animate(&ctx, id.with("open"), open);
     let on_t = theme::animate(&ctx, id.with("on"), on);
@@ -143,7 +152,7 @@ pub fn rack_item(ui: &mut Ui, section: &Section, accent: Color32, body: impl FnO
                     }
 
                     let color = theme::TEXT_DIM.lerp_to_gamma(accent, on_t);
-                    let name = egui::RichText::new(section.name.to_uppercase())
+                    let name = egui::RichText::new(item.name.to_uppercase())
                         .strong()
                         .size(13.0)
                         .extra_letter_spacing(1.0)
@@ -153,7 +162,8 @@ pub fn rack_item(ui: &mut Ui, section: &Section, accent: Color32, body: impl FnO
                         section.open.store(!open, Ordering::Relaxed);
                     }
 
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let remove = ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let remove = ui.small_button("✕").on_hover_text("Remove");
                         if ui.small_button("Reset").clicked() {
                             section.reset();
                         }
@@ -166,8 +176,9 @@ pub fn rack_item(ui: &mut Ui, section: &Section, accent: Color32, body: impl FnO
                         if on && worst >= REDUCTION_SHOWN_DB {
                             ui.colored_label(theme::WARN, format!("-{worst:.1} dB"));
                         }
+                        remove
                     });
-                    RackHeader { grip, arrow, power, rect: Rect::NOTHING }
+                    RackHeader { grip, arrow, power, remove: remove.inner, rect: Rect::NOTHING }
                 });
             if open || open_t > 0.0 {
                 let top = header.response.rect.bottom();
@@ -183,7 +194,36 @@ pub fn rack_item(ui: &mut Ui, section: &Section, accent: Color32, body: impl FnO
     RackHeader { rect, ..shown.inner }
 }
 
-/// The list of stages, in their running order, with drag-and-drop reordering.
+/// The `+` row under the stages: a dim outline that opens a menu of every kind of stage.
+/// Returns where it was drawn and the kind picked.
+fn add_row(ui: &mut Ui) -> (Rect, Option<&'static str>) {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
+    let hover_t = theme::animate(ui.ctx(), response.id.with("hover"), response.hovered());
+    let color = theme::OUTLINE_OFF.lerp_to_gamma(theme::TEXT, 0.35 * hover_t);
+    let mut outline = Vec::new();
+    egui::epaint::tessellator::path::rounded_rectangle(
+        &mut outline,
+        egui::epaint::RoundedRect::new(rect.shrink(0.75), f32::from(ROW_RADIUS)),
+    );
+    outline.push(outline[0]);
+    ui.painter().extend(Shape::dashed_line(&outline, Stroke::new(1.5, color), 6.0, 4.0));
+    let text = theme::TEXT_DIM.lerp_to_gamma(theme::TEXT, hover_t);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, "+", FontId::proportional(20.0), text);
+
+    let mut picked = None;
+    egui::Popup::menu(&response).show(|ui| {
+        for kind in crate::dsp::kinds() {
+            if ui.button(kind).clicked() {
+                picked = Some(kind);
+            }
+        }
+    });
+    response.on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Add a stage");
+    (rect, picked)
+}
+
+/// The list of stages, in their running order, with drag-and-drop reordering, a `+` row to
+/// add stages and a short-lived undo for removing one.
 #[derive(Default)]
 pub struct Rack {
     /// Position of the row being dragged.
@@ -191,26 +231,66 @@ pub struct Rack {
     /// Where each row and its grip were drawn last frame, in running order.
     rows: Vec<Rect>,
     grips: Vec<Rect>,
+    removes: Vec<Rect>,
+    plus: Option<Rect>,
+    undo_button: Option<Rect>,
+    /// The last stage removed, and until when (egui time) it can be put back.
+    undo: Option<(Removed, f64)>,
 }
 
 impl Rack {
     /// Draws every stage as a row. `body` draws the controls of an unfolded row.
-    pub fn show(&mut self, ui: &mut Ui, settings: &Settings, mut body: impl FnMut(&mut Ui, &Section, &[f32])) {
+    pub fn show(&mut self, ui: &mut Ui, settings: &Settings, mut body: impl FnMut(&mut Ui, &Item, &[f32])) {
         self.rows.clear();
         self.grips.clear();
-        let order = settings.order.get();
-        let count = order.len();
-        for (position, &index) in order.iter().enumerate() {
-            let section = &settings.sections[index];
-            let accent = theme::accent(position, count);
-            let header = rack_item(ui, section, accent, |ui, reductions| body(ui, section, reductions));
+        self.removes.clear();
+        let items = settings.items();
+        let mut remove = None;
+        for (position, item) in items.iter().enumerate() {
+            let accent = theme::accent(position, items.len());
+            let header = rack_item(ui, item, accent, |ui, reductions| body(ui, item, reductions));
             self.rows.push(header.rect);
             self.grips.push(header.grip.rect);
+            self.removes.push(header.remove.rect);
             if header.grip.drag_started() {
                 self.dragging = Some(position);
             }
+            if header.remove.clicked() {
+                remove = Some(item.id);
+            }
         }
         self.finish_drag(ui, settings);
+        let (plus, picked) = add_row(ui);
+        self.plus = Some(plus);
+        if let Some(kind) = picked {
+            settings.add(crate::dsp::new_section(kind).expect("listed kinds exist"));
+        }
+        let now = ui.input(|i| i.time);
+        if let Some(removed) = remove.and_then(|id| settings.remove(id)) {
+            self.undo = Some((removed, now + UNDO_SECONDS));
+        }
+        self.undo_link(ui, settings, now);
+    }
+
+    fn undo_link(&mut self, ui: &mut Ui, settings: &Settings, now: f64) {
+        let Some((removed, until)) = &self.undo else { return };
+        if now >= *until {
+            self.undo = None;
+            return;
+        }
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(until - now));
+        let link = ui
+            .horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("Removed {}.", removed.item.name)).color(theme::TEXT_DIM));
+                ui.link("Undo")
+            })
+            .inner;
+        self.undo_button = Some(link.rect);
+        if link.clicked() {
+            if let Some((removed, _)) = self.undo.take() {
+                settings.restore(removed);
+            }
+        }
     }
 
     /// While a row is held, show where it would land; on release, move it there.
@@ -237,7 +317,7 @@ impl Rack {
         );
         if released || cancelled {
             if released && !cancelled {
-                settings.order.set(&moved(&settings.order.get(), from, gap));
+                settings.move_item(from, gap);
             }
             self.dragging = None;
         }
@@ -297,6 +377,7 @@ mod tests {
     use super::*;
     use egui::{Event, Modifiers, Pos2, PointerButton, Rect, pos2, vec2};
     use std::cell::{Cell, RefCell};
+    use std::sync::Arc;
 
     /// Runs frames of a one-row rack and remembers where the header controls were.
     struct Harness {
@@ -320,15 +401,16 @@ mod tests {
             }
         }
 
-        fn frame(&self, section: &Section, events: Vec<Event>) {
+        fn frame(&self, section: &Arc<Section>, events: Vec<Event>) {
             let input = egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(700.0, 500.0))),
                 events,
                 ..Default::default()
             };
             self.body_drawn.set(false);
+            let item = Item { id: 1, name: section.name.to_string(), section: section.clone() };
             let _ = self.ctx.run_ui(input, |ui| {
-                let header = rack_item(ui, section, theme::accent(0, 1), |ui, reductions| {
+                let header = rack_item(ui, &item, theme::accent(0, 1), |ui, reductions| {
                     self.body_drawn.set(true);
                     *self.shown_reductions.borrow_mut() = reductions.to_vec();
                     section_body(ui, section, reductions);
@@ -340,7 +422,7 @@ mod tests {
         }
 
         /// Row heights over the frames after toggling the fold, until it settles.
-        fn fold_heights(&self, section: &Section) -> Vec<f32> {
+        fn fold_heights(&self, section: &Arc<Section>) -> Vec<f32> {
             section.open.store(!section.open.load(Ordering::Relaxed), Ordering::Relaxed);
             (0..30)
                 .map(|_| {
@@ -350,7 +432,7 @@ mod tests {
                 .collect()
         }
 
-        fn click(&self, section: &Section, at: Pos2) {
+        fn click(&self, section: &Arc<Section>, at: Pos2) {
             let button = |pressed| Event::PointerButton {
                 pos: at,
                 button: PointerButton::Primary,
@@ -364,7 +446,7 @@ mod tests {
         }
 
         /// Runs long enough for the fold and fade animations to finish.
-        fn settle(&self, section: &Section) {
+        fn settle(&self, section: &Arc<Section>) {
             (0..30).for_each(|_| self.frame(section, vec![]));
         }
     }
@@ -392,8 +474,25 @@ mod tests {
                 ..Default::default()
             };
             let _ = self.ctx.run_ui(input, |ui| {
-                self.rack.borrow_mut().show(ui, &self.settings, |ui, section, r| section_body(ui, section, r));
+                self.rack.borrow_mut().show(ui, &self.settings, |ui, item, r| section_body(ui, &item.section, r));
             });
+        }
+
+        fn click(&self, at: Pos2) {
+            let button = |pressed| Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
+            self.frame(vec![Event::PointerMoved(at)]);
+            self.frame(vec![button(true)]);
+            self.frame(vec![button(false)]);
+            self.frame(vec![]);
+        }
+
+        fn names(&self) -> Vec<String> {
+            self.settings.items().iter().map(|i| i.name.clone()).collect()
         }
 
         fn grip(&self, position: usize) -> Pos2 {
@@ -436,7 +535,7 @@ mod tests {
         rows.frame(vec![]);
         let to = pos2(rows.grip(0).x, rows.row(2).bottom() + 6.0);
         rows.drag(rows.grip(0), to, false);
-        assert_eq!(rows.settings.order.get(), vec![1, 2, 0]);
+        assert_eq!(rows.names(), ["B", "C", "A"]);
 
         // The list is now drawn in the new order: the old first stage is last.
         rows.frame(vec![]);
@@ -449,18 +548,18 @@ mod tests {
         rows.frame(vec![]);
         let to = pos2(rows.grip(2).x, rows.row(0).top() - 3.0);
         rows.drag(rows.grip(2), to, false);
-        assert_eq!(rows.settings.order.get(), vec![2, 0, 1]);
+        assert_eq!(rows.names(), ["C", "A", "B"]);
     }
 
     #[test]
     fn dropping_a_stage_back_where_it_was_changes_nothing() {
         let rows = Rows::new();
         rows.frame(vec![]);
-        let version = rows.settings.order.version();
+        let version = rows.settings.generation();
         let to = pos2(rows.grip(1).x, rows.row(1).center().y + 4.0);
         rows.drag(rows.grip(1), to, false);
-        assert_eq!(rows.settings.order.get(), vec![0, 1, 2]);
-        assert_eq!(rows.settings.order.version(), version, "nothing for the audio thread to do");
+        assert_eq!(rows.names(), ["A", "B", "C"]);
+        assert_eq!(rows.settings.generation(), version, "nothing for the audio thread to do");
     }
 
     #[test]
@@ -469,7 +568,7 @@ mod tests {
         rows.frame(vec![]);
         let to = pos2(rows.grip(0).x, rows.row(2).bottom() + 6.0);
         rows.drag(rows.grip(0), to, true);
-        assert_eq!(rows.settings.order.get(), vec![0, 1, 2]);
+        assert_eq!(rows.names(), ["A", "B", "C"]);
     }
 
     #[test]
@@ -479,7 +578,66 @@ mod tests {
         let name = rows.row(0).center();
         let to = pos2(name.x, rows.row(2).bottom() + 6.0);
         rows.drag(name, to, false);
-        assert_eq!(rows.settings.order.get(), vec![0, 1, 2], "only the grip drags");
+        assert_eq!(rows.names(), ["A", "B", "C"], "only the grip drags");
+    }
+
+    #[test]
+    fn the_cross_removes_a_stage_and_undo_puts_it_back() {
+        let rows = Rows::new();
+        rows.frame(vec![]);
+        let remove = rows.rack.borrow().removes[1];
+        assert!(remove.right() > rows.row(1).right() - 40.0, "at the right end of the header");
+        rows.click(remove.center());
+        assert_eq!(rows.names(), ["A", "C"]);
+        assert_eq!(rows.rack.borrow().rows.len(), 2);
+
+        let undo = rows.rack.borrow().undo_button.unwrap();
+        assert!(undo.top() > rows.rack.borrow().plus.unwrap().bottom(), "offered under the rack");
+        rows.click(undo.center());
+        assert_eq!(rows.names(), ["A", "B", "C"]);
+        assert!(rows.rack.borrow().undo.is_none());
+    }
+
+    #[test]
+    fn the_undo_offer_runs_out() {
+        let rows = Rows::new();
+        rows.frame(vec![]);
+        let remove = rows.rack.borrow().removes[0];
+        rows.click(remove.center());
+        assert!(rows.rack.borrow().undo.is_some());
+        let later = egui::RawInput { time: Some(UNDO_SECONDS + 60.0), ..Default::default() };
+        let _ = rows.ctx.run_ui(later, |ui| {
+            rows.rack.borrow_mut().show(ui, &rows.settings, |_, _, _| {});
+        });
+        assert!(rows.rack.borrow().undo.is_none());
+        assert_eq!(rows.names(), ["B", "C"]);
+    }
+
+    #[test]
+    fn the_plus_row_spans_the_rack_and_opens_a_menu() {
+        let rows = Rows::new();
+        rows.frame(vec![]);
+        let plus = rows.rack.borrow().plus.unwrap();
+        assert!(plus.top() >= rows.row(2).bottom(), "below the last stage");
+        assert_eq!(plus.x_range(), rows.row(0).x_range(), "as wide as a row");
+        assert!(!egui::Popup::is_any_open(&rows.ctx));
+        rows.click(plus.center());
+        assert!(egui::Popup::is_any_open(&rows.ctx));
+    }
+
+    #[test]
+    fn two_stages_of_one_kind_fold_separately() {
+        let settings = Settings::new(vec![crate::dsp::new_section("EQ").unwrap(), crate::dsp::new_section("EQ").unwrap()]);
+        let items = settings.items();
+        items[1].section.open.store(false, Ordering::Relaxed);
+        let ctx = egui::Context::default();
+        let mut rack = Rack::default();
+        for _ in 0..30 {
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                rack.show(ui, &settings, |ui, item, r| section_body(ui, &item.section, r));
+            });
+        }
+        assert!(rack.rows[0].height() > rack.rows[1].height() + 20.0, "{:?}", rack.rows);
     }
 
     #[test]
@@ -496,10 +654,12 @@ mod tests {
         assert_eq!(gap_line_y(3, &rows), 116.0);
     }
 
-    fn compressor_like() -> Section {
-        Section::new("Compressor", vec![Param::new("Ratio", ":1", 1.0, 10.0, 2.0)])
-            .with_reduction_meters(&["Mid"])
-            .unfolded()
+    fn compressor_like() -> Arc<Section> {
+        Arc::new(
+            Section::new("Compressor", vec![Param::new("Ratio", ":1", 1.0, 10.0, 2.0)])
+                .with_reduction_meters(&["Mid"])
+                .unfolded(),
+        )
     }
 
     #[test]
@@ -579,7 +739,7 @@ mod tests {
     #[test]
     fn the_stage_list_has_a_row_for_every_stage_in_signal_order() {
         let settings = crate::settings::Settings::new(crate::dsp::default_sections());
-        let names: Vec<_> = settings.sections.iter().map(|s| s.name).collect();
+        let names: Vec<_> = settings.items().iter().map(|i| i.name.clone()).collect();
         assert_eq!(
             names,
             [
@@ -597,10 +757,10 @@ mod tests {
         let ctx = egui::Context::default();
         let drawn = std::cell::Cell::new(0);
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            for s in &settings.sections {
-                rack_item(ui, s, theme::accent(0, 1), |ui, r| {
+            for item in settings.items() {
+                rack_item(ui, &item, theme::accent(0, 1), |ui, r| {
                     drawn.set(drawn.get() + 1);
-                    section_body(ui, s, r);
+                    section_body(ui, &item.section, r);
                 });
             }
         });

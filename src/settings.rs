@@ -1,13 +1,14 @@
-//! Parameters shared between the UI thread and the DSP thread. Everything is an atomic,
-//! so the audio path never takes a lock.
+//! Parameters shared between the UI thread and the DSP thread. Controls are atomics, so the
+//! audio path never takes a lock for them. The list of stages sits behind a mutex that the
+//! DSP thread only takes when the rack's generation says it changed.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{
-    AtomicBool, AtomicU32, AtomicUsize,
+    AtomicBool, AtomicU32, AtomicU64, AtomicUsize,
     Ordering::{Acquire, Relaxed, Release},
 };
+use std::sync::{Arc, Mutex};
 
 /// `%APPDATA%\middlemic\settings.ini`, or the current directory if APPDATA is unset.
 pub fn settings_path() -> PathBuf {
@@ -301,175 +302,333 @@ impl Meters {
     }
 }
 
-/// True if `order` lists each of `0..order.len()` exactly once.
-pub fn is_permutation(order: &[usize]) -> bool {
-    let mut seen = vec![false; order.len()];
-    order.iter().all(|&i| i < seen.len() && !std::mem::replace(&mut seen[i], true))
-}
-
-/// `order` with the entry at position `from` moved into the gap before position `gap`
+/// `list` with the entry at position `from` moved into the gap before position `gap`
 /// (`0..=len`, where `len` means after the last).
-pub fn moved(order: &[usize], from: usize, gap: usize) -> Vec<usize> {
-    let mut out = order.to_vec();
+pub fn moved<T: Clone>(list: &[T], from: usize, gap: usize) -> Vec<T> {
+    let mut out = list.to_vec();
     let item = out.remove(from);
     let at = if gap > from { gap - 1 } else { gap };
     out.insert(at.min(out.len()), item);
     out
 }
 
-/// The order stages run in, shared between the UI (which changes it) and the DSP thread
-/// (which follows it). Each position holds an index into [`Settings::sections`].
-pub struct Order {
-    slots: Vec<AtomicUsize>,
-    version: AtomicU32,
+/// One stage in the rack: an instance of a kind (its section's name) with its own controls.
+pub struct Item {
+    /// Unique within the rack and saved with it, so the DSP thread can tell new stages from old.
+    pub id: u64,
+    /// The kind's name, numbered from the second of a kind on: "EQ", "EQ 2".
+    pub name: String,
+    pub section: Arc<Section>,
 }
 
-impl Order {
-    fn new(len: usize) -> Self {
-        Self {
-            slots: (0..len).map(AtomicUsize::new).collect(),
-            version: AtomicU32::new(0),
+impl Item {
+    pub fn kind(&self) -> &'static str {
+        self.section.name
+    }
+}
+
+/// The lowest-numbered name not yet taken by a stage of `kind`.
+pub fn free_name(items: &[Arc<Item>], kind: &str) -> String {
+    let taken = |name: &str| items.iter().any(|i| i.name == name);
+    if !taken(kind) {
+        return kind.to_string();
+    }
+    (2..).map(|n| format!("{kind} {n}")).find(|n| !taken(n)).expect("some number is free")
+}
+
+/// A removed stage and where it was, so it can be put back.
+pub struct Removed {
+    pub position: usize,
+    pub item: Arc<Item>,
+}
+
+/// Marks text written by [`rack_to_text`], which numbers its stages; older files name them.
+const FORMAT_LINE: &str = "rack.format=2";
+
+/// The whole rack as text: one `[stage <id>]` block per item, in running order.
+pub fn rack_to_text(items: &[Arc<Item>]) -> String {
+    let mut out = format!("{FORMAT_LINE}\n");
+    for item in items {
+        let section = &item.section;
+        out.push_str(&format!(
+            "\n[stage {}]\nkind={}\nname={}\nenabled={}\nopen={}\n",
+            item.id,
+            item.kind(),
+            item.name,
+            section.is_enabled(),
+            section.open.load(Relaxed)
+        ));
+        if !section.simple.is_empty() {
+            out.push_str(&format!("advanced={}\n", section.advanced.load(Relaxed)));
+        }
+        for p in section.simple.iter().chain(&section.params) {
+            out.push_str(&format!("{}={}\n", p.name, p.get()));
         }
     }
+    out
+}
 
-    pub fn get(&self) -> Vec<usize> {
-        self.slots.iter().map(|s| s.load(Relaxed)).collect()
+/// The items in text from [`rack_to_text`], in order, or `None` if it is not in that format.
+/// Unknown kinds, repeated ids and malformed lines are skipped.
+pub fn rack_from_text(text: &str) -> Option<Vec<Item>> {
+    let (top, blocks) = parse_ini(text);
+    if !top.iter().any(|&(k, v)| format!("{k}={v}") == FORMAT_LINE) {
+        return None;
     }
-
-    /// Changes whenever the order does, so the DSP thread can cheaply notice.
-    pub fn version(&self) -> u32 {
-        self.version.load(Acquire)
+    let mut items: Vec<Item> = Vec::new();
+    for (header, lines) in blocks {
+        let Some(id) = header.strip_prefix("stage ").and_then(|id| id.trim().parse().ok()) else {
+            continue;
+        };
+        let value = |key| lines.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
+        let Some(section) = value("kind").and_then(crate::dsp::new_section) else {
+            continue;
+        };
+        if items.iter().any(|i| i.id == id) {
+            continue;
+        }
+        lines.iter().for_each(|(k, v)| apply_key(&section, k, v));
+        let name = value("name").filter(|n| !n.is_empty()).unwrap_or(section.name).to_string();
+        items.push(Item { id, name, section: Arc::new(section) });
     }
+    Some(items)
+}
 
-    /// Ignored unless `order` is a permutation of the stages.
-    pub fn set(&self, order: &[usize]) {
-        if order.len() != self.slots.len() || !is_permutation(order) || self.get() == order {
+type IniLines<'a> = Vec<(&'a str, &'a str)>;
+
+/// `key=value` lines before the first `[header]`, then each header with its lines.
+fn parse_ini(text: &str) -> (IniLines<'_>, Vec<(&str, IniLines<'_>)>) {
+    let (mut top, mut blocks): (IniLines, Vec<(&str, IniLines)>) = (Vec::new(), Vec::new());
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Some(header) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            blocks.push((header, Vec::new()));
+        } else if let Some(pair) = line.split_once('=') {
+            match blocks.last_mut() {
+                Some((_, lines)) => lines.push(pair),
+                None => top.push(pair),
+            }
+        }
+    }
+    (top, blocks)
+}
+
+/// One saved control. Keys that are not a flag or parameter, and bad values, are ignored.
+fn apply_key(section: &Section, key: &str, value: &str) {
+    let flag = match key {
+        "enabled" => &section.enabled,
+        "open" => &section.open,
+        "advanced" => &section.advanced,
+        _ => {
+            let found = section.simple.iter().chain(&section.params).find(|p| p.name == key);
+            if let (Some(p), Ok(v)) = (found, value.parse()) {
+                p.set(v);
+            }
             return;
         }
-        for (slot, &i) in self.slots.iter().zip(order) {
-            slot.store(i, Relaxed);
-        }
-        self.version.fetch_add(1, Release);
+    };
+    if let Ok(v) = value.parse() {
+        flag.store(v, Relaxed);
     }
+}
+
+struct Rack {
+    /// In running order.
+    items: Vec<Arc<Item>>,
+    next_id: u64,
 }
 
 pub struct Settings {
-    pub sections: Vec<Arc<Section>>,
+    rack: Mutex<Rack>,
+    /// Changes whenever stages are added, removed or moved, so the DSP thread can cheaply notice.
+    generation: AtomicU64,
     pub meters: Meters,
-    pub order: Order,
 }
 
 impl Settings {
+    /// A rack of `sections`, in that order.
     pub fn new(sections: Vec<Section>) -> Arc<Self> {
-        let order = Order::new(sections.len());
-        Arc::new(Self {
-            sections: sections.into_iter().map(Arc::new).collect(),
+        let settings = Arc::new(Self {
+            rack: Mutex::new(Rack { items: Vec::new(), next_id: 1 }),
+            generation: AtomicU64::new(0),
             meters: Meters::default(),
-            order,
+        });
+        for section in sections {
+            settings.push(section);
+        }
+        settings
+    }
+
+    /// Change the rack under its lock. `change` returns whether it changed anything.
+    fn edit<R>(&self, change: impl FnOnce(&mut Rack) -> (bool, R)) -> R {
+        let mut rack = self.rack.lock().unwrap();
+        let (changed, result) = change(&mut rack);
+        if changed {
+            self.generation.fetch_add(1, Release);
+        }
+        result
+    }
+
+    fn push(&self, section: Section) -> Arc<Item> {
+        self.edit(|rack| {
+            let item = Arc::new(Item {
+                id: rack.next_id,
+                name: free_name(&rack.items, section.name),
+                section: Arc::new(section),
+            });
+            rack.next_id += 1;
+            rack.items.push(item.clone());
+            (true, item)
         })
     }
 
-    /// Stage names in running order, as saved to the settings file.
-    fn order_names(&self) -> String {
-        let names: Vec<_> = self.order.get().iter().map(|&i| self.sections[i].name).collect();
-        names.join(",")
+    /// The stages in running order.
+    pub fn items(&self) -> Vec<Arc<Item>> {
+        self.rack.lock().unwrap().items.clone()
     }
 
-    /// Apply a saved order. Unknown names are skipped and stages missing from the list go back
-    /// to their usual position, so a settings file from another version still works and a
-    /// stage added later (echo cancellation, which must come first) is not exiled to the end.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Acquire)
+    }
+
+    /// The generation together with the stages it describes.
+    pub fn snapshot(&self) -> (u64, Vec<Arc<Item>>) {
+        let rack = self.rack.lock().unwrap();
+        (self.generation(), rack.items.clone())
+    }
+
+    /// Append a new stage, unfolded.
+    pub fn add(&self, section: Section) -> Arc<Item> {
+        self.push(section.unfolded())
+    }
+
+    pub fn remove(&self, id: u64) -> Option<Removed> {
+        self.edit(|rack| {
+            let Some(position) = rack.items.iter().position(|i| i.id == id) else {
+                return (false, None);
+            };
+            let item = rack.items.remove(position);
+            (true, Some(Removed { position, item }))
+        })
+    }
+
+    /// Put a removed stage back where it was, renumbered if its name was taken meanwhile.
+    pub fn restore(&self, removed: Removed) {
+        self.edit(|rack| {
+            if rack.items.iter().any(|i| i.id == removed.item.id) {
+                return (false, ());
+            }
+            let mut item = removed.item;
+            if rack.items.iter().any(|i| i.name == item.name) {
+                item = Arc::new(Item {
+                    id: item.id,
+                    name: free_name(&rack.items, item.kind()),
+                    section: item.section.clone(),
+                });
+            }
+            let at = removed.position.min(rack.items.len());
+            rack.items.insert(at, item);
+            (true, ())
+        })
+    }
+
+    /// Move the stage at position `from` into the gap before position `gap` (see [`moved`]).
+    pub fn move_item(&self, from: usize, gap: usize) {
+        self.edit(|rack| {
+            if from >= rack.items.len() {
+                return (false, ());
+            }
+            let items = moved(&rack.items, from, gap);
+            let changed = items.iter().zip(&rack.items).any(|(a, b)| a.id != b.id);
+            rack.items = items;
+            (changed, ())
+        })
+    }
+
+    /// Replace every stage, keeping new ids clear of the ones given.
+    fn replace(&self, items: Vec<Item>) {
+        self.edit(|rack| {
+            let highest = items.iter().map(|i| i.id).max().unwrap_or(0);
+            rack.next_id = rack.next_id.max(highest + 1);
+            rack.items = items.into_iter().map(Arc::new).collect();
+            (true, ())
+        })
+    }
+
+    /// Apply an order saved by name, from before stages had ids. Unknown names are skipped and
+    /// stages missing from the list go back to their usual position, so a stage added in a
+    /// later version (echo cancellation, which must come first) is not exiled to the end.
     fn set_order_by_names(&self, names: &str) {
-        let mut order: Vec<usize> = Vec::new();
-        for name in names.split(',').map(str::trim) {
-            if let Some(i) = self.sections.iter().position(|s| s.name == name) {
-                if !order.contains(&i) {
-                    order.push(i);
+        self.edit(|rack| {
+            let mut order: Vec<usize> = Vec::new();
+            for name in names.split(',').map(str::trim) {
+                if let Some(i) = rack.items.iter().position(|s| s.name == name) {
+                    if !order.contains(&i) {
+                        order.push(i);
+                    }
                 }
             }
-        }
-        for i in 0..self.sections.len() {
-            if !order.contains(&i) {
-                order.insert(i.min(order.len()), i);
+            for i in 0..rack.items.len() {
+                if !order.contains(&i) {
+                    order.insert(i.min(order.len()), i);
+                }
             }
-        }
-        self.order.set(&order);
+            let changed = order.iter().enumerate().any(|(at, &i)| at != i);
+            rack.items = order.iter().map(|&i| rack.items[i].clone()).collect();
+            (changed, ())
+        })
     }
 
+    /// The controls of the stage called `name`. Panics if there is none.
+    #[cfg(test)]
     pub fn section(&self, name: &str) -> Arc<Section> {
-        self.sections
+        self.items()
             .iter()
-            .find(|s| s.name == name)
-            .unwrap_or_else(|| panic!("no section named {name:?}"))
+            .find(|i| i.name == name)
+            .unwrap_or_else(|| panic!("no stage named {name:?}"))
+            .section
             .clone()
     }
 
+    /// Every stage back to its default sound. Which stages there are, and their order, stay.
     pub fn reset(&self) {
-        self.sections.iter().for_each(|s| s.reset());
-        self.order.set(&(0..self.sections.len()).collect::<Vec<_>>());
+        self.items().iter().for_each(|i| i.section.reset());
     }
 
-    /// INI-style text. `extras` are written before the first section.
+    /// INI-style text: `extras`, then the rack.
     pub fn to_text(&self, extras: &[(&str, &str)]) -> String {
-        let mut out = format!("order={}\n", self.order_names());
-        for (key, value) in extras {
-            out.push_str(&format!("{key}={value}\n"));
-        }
-        for section in &self.sections {
-            out.push_str(&format!(
-                "\n[{}]\nenabled={}\nopen={}\n",
-                section.name,
-                section.is_enabled(),
-                section.open.load(Relaxed)
-            ));
-            if !section.simple.is_empty() {
-                out.push_str(&format!("advanced={}\n", section.advanced.load(Relaxed)));
-            }
-            for p in section.simple.iter().chain(&section.params) {
-                out.push_str(&format!("{}={}\n", p.name, p.get()));
-            }
-        }
+        let mut out: String = extras.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
+        out.push_str(&rack_to_text(&self.items()));
         out
     }
 
     /// Apply saved text. Unknown or malformed lines are ignored. Returns the extras.
+    /// A file from before stages had ids (`[EQ]` blocks) is applied to the stages of those
+    /// names, which for a fresh rack are the defaults, one of each kind.
     pub fn apply_text(&self, text: &str) -> HashMap<String, String> {
+        let (top, blocks) = parse_ini(text);
         let mut extras = HashMap::new();
-        let mut current: Option<&Arc<Section>> = None;
-        for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
-            if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
-                current = self.sections.iter().find(|s| s.name == name);
-                continue;
-            }
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            match current {
-                None if key == "order" => self.set_order_by_names(value),
-                None => {
+        let mut old_order = None;
+        for (key, value) in top {
+            match key {
+                "order" => old_order = Some(value),
+                "rack.format" => {}
+                _ => {
                     extras.insert(key.to_string(), value.to_string());
                 }
-                Some(section) if key == "enabled" => {
-                    if let Ok(v) = value.parse() {
-                        section.enabled.store(v, Relaxed);
-                    }
-                }
-                Some(section) if key == "open" => {
-                    if let Ok(v) = value.parse() {
-                        section.open.store(v, Relaxed);
-                    }
-                }
-                Some(section) if key == "advanced" => {
-                    if let Ok(v) = value.parse() {
-                        section.advanced.store(v, Relaxed);
-                    }
-                }
-                Some(section) => {
-                    let found = section.simple.iter().chain(&section.params).find(|p| p.name == key);
-                    if let (Some(p), Ok(v)) = (found, value.parse()) {
-                        p.set(v);
-                    }
-                }
             }
+        }
+        if let Some(items) = rack_from_text(text) {
+            self.replace(items);
+            return extras;
+        }
+        let items = self.items();
+        for (name, lines) in blocks {
+            if let Some(item) = items.iter().find(|i| i.name == name) {
+                lines.iter().for_each(|(k, v)| apply_key(&item.section, k, v));
+            }
+        }
+        if let Some(names) = old_order {
+            self.set_order_by_names(names);
         }
         extras
     }
@@ -478,12 +637,14 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsp::new_section;
 
-    fn settings() -> Arc<Settings> {
-        Settings::new(vec![Section::new(
-            "EQ",
-            vec![Param::new("Boost", "dB", 0.0, 30.0, 5.0)],
-        )])
+    fn rack(kinds: &[&str]) -> Arc<Settings> {
+        Settings::new(kinds.iter().map(|k| new_section(k).unwrap()).collect())
+    }
+
+    fn names(settings: &Settings) -> Vec<String> {
+        settings.items().iter().map(|i| i.name.clone()).collect()
     }
 
     #[test]
@@ -495,48 +656,176 @@ mod tests {
 
     #[test]
     fn text_round_trips_values_and_extras() {
-        let a = settings();
-        a.section("EQ").params[0].set(12.5);
-        a.section("EQ").enabled.store(false, Relaxed);
+        let a = rack(&["Mic boost"]);
+        a.section("Mic boost").params[0].set(12.5);
+        a.section("Mic boost").enabled.store(false, Relaxed);
         let text = a.to_text(&[("device.output", "CABLE Input")]);
 
-        let b = settings();
+        let b = rack(&["Mic boost"]);
         let extras = b.apply_text(&text);
-        assert_eq!(b.section("EQ").params[0].get(), 12.5);
-        assert!(!b.section("EQ").is_enabled());
+        assert_eq!(b.section("Mic boost").params[0].get(), 12.5);
+        assert!(!b.section("Mic boost").is_enabled());
         assert_eq!(extras["device.output"], "CABLE Input");
+        assert!(!extras.contains_key("rack.format"));
     }
 
     #[test]
     fn junk_in_saved_text_is_ignored() {
-        let s = settings();
-        s.apply_text("[Nope]\nBoost=9\n[EQ]\nBoost=abc\nwhat\n");
-        assert_eq!(s.section("EQ").params[0].get(), 5.0);
+        let s = rack(&["Mic boost"]);
+        s.apply_text("[Nope]\nBoost=9\n[Mic boost]\nBoost=abc\nwhat\n");
+        assert_eq!(s.section("Mic boost").params[0].get(), 0.0);
+
+        let items = rack_from_text(&format!(
+            "{FORMAT_LINE}\n[stage 4]\nkind=Gone\n[stage x]\nkind=EQ\n[stage 5]\nkind=EQ\n[stage 5]\nkind=Limiter\n[stage 6]\nname=no kind\n"
+        ))
+        .unwrap();
+        let kept: Vec<_> = items.iter().map(|i| (i.id, i.kind())).collect();
+        assert_eq!(kept, [(5, "EQ")], "unknown kind, bad id, repeated id and missing kind skipped");
     }
 
     #[test]
     fn simple_mode_round_trips_and_resets() {
-        let make = || {
-            Settings::new(vec![
-                Section::new("C", vec![Param::new("Ratio", ":1", 1.0, 10.0, 2.0)])
-                    .with_simple(vec![Param::new("Amount", "%", 0.0, 100.0, 50.0)], &[("Gentle", 25.0)]),
-            ])
-        };
-        let a = make();
-        assert!(!a.section("C").is_advanced(), "starts in simple mode");
-        a.section("C").simple[0].set(80.0);
-        a.section("C").advanced.store(true, Relaxed);
-        a.section("C").params[0].set(6.0);
+        let a = rack(&["Compressor"]);
+        let c = a.section("Compressor");
+        assert!(!c.is_advanced(), "starts in simple mode");
+        c.simple[0].set(80.0);
+        c.advanced.store(true, Relaxed);
+        c.params[0].set(600.0);
 
-        let b = make();
+        let b = rack(&["Compressor"]);
         b.apply_text(&a.to_text(&[]));
-        assert!(b.section("C").is_advanced());
-        assert_eq!(b.section("C").simple[0].get(), 80.0);
-        assert_eq!(b.section("C").params[0].get(), 6.0);
+        let c = b.section("Compressor");
+        assert!(c.is_advanced());
+        assert_eq!(c.simple[0].get(), 80.0);
+        assert_eq!(c.params[0].get(), 600.0);
 
         b.reset();
-        assert!(!b.section("C").is_advanced());
-        assert_eq!(b.section("C").simple[0].get(), 50.0);
+        assert!(!c.is_advanced());
+        assert_eq!(c.simple[0].get(), 50.0);
+    }
+
+    #[test]
+    fn a_second_stage_of_a_kind_takes_the_lowest_free_number() {
+        let s = rack(&["EQ", "Limiter"]);
+        let eq2 = s.add(new_section("EQ").unwrap());
+        let eq3 = s.add(new_section("EQ").unwrap());
+        assert_eq!(names(&s), ["EQ", "Limiter", "EQ 2", "EQ 3"]);
+        assert!(eq2.section.open.load(Relaxed), "added stages start unfolded");
+
+        let ids: Vec<u64> = s.items().iter().map(|i| i.id).collect();
+        assert!(ids.windows(2).all(|w| w[0] != w[1]) && !ids[..2].contains(&eq3.id));
+
+        s.remove(eq2.id).unwrap();
+        let first = s.items()[0].id;
+        s.remove(first).unwrap();
+        assert_eq!(names(&s), ["Limiter", "EQ 3"]);
+        s.add(new_section("EQ").unwrap());
+        s.add(new_section("EQ").unwrap());
+        assert_eq!(names(&s), ["Limiter", "EQ 3", "EQ", "EQ 2"]);
+        assert!(s.remove(999).is_none());
+    }
+
+    #[test]
+    fn undo_puts_a_removed_stage_back_where_it_was() {
+        let s = rack(&["Mic boost", "EQ", "Limiter"]);
+        let eq = s.items()[1].clone();
+        eq.section.params[1].set(321.0);
+        let removed = s.remove(eq.id).unwrap();
+        assert_eq!(names(&s), ["Mic boost", "Limiter"]);
+
+        let generation = s.generation();
+        s.restore(removed);
+        assert_ne!(s.generation(), generation);
+        let back = s.items()[1].clone();
+        assert_eq!((back.id, back.name.as_str()), (eq.id, "EQ"));
+        assert_eq!(back.section.params[1].get(), 321.0, "with its settings");
+
+        let removed = s.remove(eq.id).unwrap();
+        s.add(new_section("EQ").unwrap());
+        s.restore(removed);
+        assert_eq!(names(&s), ["Mic boost", "EQ 2", "Limiter", "EQ"], "renumbered, as the name was taken");
+    }
+
+    #[test]
+    fn the_rack_round_trips_with_ids_names_order_and_each_instances_values() {
+        let a = rack(&["EQ", "Limiter"]);
+        let eq2 = a.add(new_section("EQ").unwrap());
+        a.move_item(2, 0);
+        eq2.section.params[0].set(300.0);
+        eq2.section.enabled.store(false, Relaxed);
+        a.items()[1].section.params[0].set(150.0);
+
+        let b = Settings::new(crate::dsp::default_sections());
+        b.apply_text(&a.to_text(&[]));
+        let (left, right) = (a.items(), b.items());
+        let summary = |items: &[Arc<Item>]| -> Vec<_> {
+            items
+                .iter()
+                .map(|i| (i.id, i.name.clone(), i.section.is_enabled(), i.section.open.load(Relaxed), i.section.params[0].get()))
+                .collect()
+        };
+        assert_eq!(summary(&right), summary(&left));
+        assert_eq!(names(&b), ["EQ 2", "EQ", "Limiter"]);
+
+        let next = b.add(new_section("EQ").unwrap());
+        assert!(left.iter().all(|i| i.id < next.id), "new ids never reuse saved ones");
+        assert_eq!(next.name, "EQ 3");
+    }
+
+    #[test]
+    fn an_empty_rack_stays_empty() {
+        let a = rack(&["EQ"]);
+        a.remove(a.items()[0].id);
+        let b = Settings::new(crate::dsp::default_sections());
+        b.apply_text(&a.to_text(&[]));
+        assert!(b.items().is_empty());
+    }
+
+    /// What the version before numbered stages saved for the default rack.
+    const OLD_FILE: &str = "order=Echo cancellation,Noise removal,Noise removal (DPDFNet),Noise removal (RNNoise),Mic boost,De-esser,EQ,Compressor,Limiter
+device.input=System default
+device.output=CABLE Input (VB-Audio Virtual Cable)
+
+[Echo cancellation]
+enabled=true
+open=false
+
+[EQ]
+enabled=false
+open=false
+High-pass=120
+
+[Compressor]
+enabled=true
+open=true
+advanced=true
+Amount=70
+Low crossover=300
+";
+
+    #[test]
+    fn a_file_from_before_numbered_stages_maps_each_block_onto_one_stage() {
+        let s = Settings::new(crate::dsp::default_sections());
+        let extras = s.apply_text(OLD_FILE);
+        assert_eq!(extras["device.output"], "CABLE Input (VB-Audio Virtual Cable)");
+        assert!(!extras.contains_key("order"));
+        let kinds: Vec<_> = s.items().iter().map(|i| i.kind()).collect();
+        assert_eq!(kinds[4..7], ["Mic boost", "De-esser", "EQ"], "saved order kept");
+        assert_eq!(names(&s).len(), 9);
+
+        assert!(s.section("Echo cancellation").is_enabled());
+        let eq = s.section("EQ");
+        assert!(!eq.is_enabled() && !eq.open.load(Relaxed));
+        assert_eq!(eq.params[0].get(), 120.0);
+        let c = s.section("Compressor");
+        assert!(c.is_advanced() && c.open.load(Relaxed));
+        assert_eq!((c.simple[0].get(), c.params[0].get()), (70.0, 300.0));
+
+        let saved = s.to_text(&[]);
+        let t = Settings::new(crate::dsp::default_sections());
+        t.apply_text(&saved);
+        assert_eq!(names(&t), names(&s), "and saves back in the new format");
+        assert!(saved.contains("[stage "), "{saved}");
     }
 
     #[test]
@@ -595,60 +884,54 @@ mod tests {
     }
 
     #[test]
-    fn only_real_permutations_are_accepted() {
-        assert!(is_permutation(&[2, 0, 1]));
-        assert!(!is_permutation(&[0, 0, 1]), "duplicate");
-        assert!(!is_permutation(&[0, 3, 1]), "out of range");
+    fn moving_changes_the_generation_only_when_the_order_changes() {
         let s = four_stages();
-        let v = s.order.version();
-        s.order.set(&[0, 1, 2]);
-        s.order.set(&[0, 0, 1, 2]);
-        assert_eq!((s.order.get(), s.order.version()), (vec![0, 1, 2, 3], v), "rejected, untouched");
-        s.order.set(&[3, 2, 1, 0]);
-        assert_eq!(s.order.get(), vec![3, 2, 1, 0]);
-        assert_ne!(s.order.version(), v, "readers can tell it changed");
+        let v = s.generation();
+        s.move_item(1, 2);
+        s.move_item(9, 0);
+        assert_eq!(s.generation(), v, "dropped on itself, or out of range");
+        s.move_item(3, 0);
+        assert_eq!(names(&s), ["D", "A", "B", "C"]);
+        assert_ne!(s.generation(), v, "readers can tell it changed");
     }
 
     #[test]
-    fn order_is_saved_by_name_and_survives_added_or_removed_stages() {
-        let a = four_stages();
-        a.order.set(&[2, 0, 3, 1]);
-        let text = a.to_text(&[]);
-        assert!(text.starts_with("order=C,A,D,B"), "{text}");
-
+    fn an_old_order_by_name_survives_added_or_removed_stages() {
         let b = four_stages();
-        b.apply_text(&text);
-        assert_eq!(b.order.get(), vec![2, 0, 3, 1]);
+        b.apply_text("order=C,A,D,B\n");
+        assert_eq!(names(&b), ["C", "A", "D", "B"]);
 
-        // A file from another version: one stage unknown, one missing, one repeated.
+        // One stage unknown, one missing, one repeated.
         let c = four_stages();
         c.apply_text("order=D,Gone,D,B\n");
-        assert_eq!(c.order.get(), vec![0, 3, 2, 1], "unknown dropped, missing back at their usual positions");
+        assert_eq!(names(&c), ["A", "D", "C", "B"], "unknown dropped, missing back at their usual positions");
     }
 
     #[test]
-    fn reset_all_restores_the_usual_order() {
-        let s = four_stages();
-        s.order.set(&[3, 2, 1, 0]);
+    fn reset_all_keeps_the_stages_and_their_order() {
+        let s = rack(&["Mic boost", "EQ"]);
+        s.add(new_section("Mic boost").unwrap()).section.params[0].set(9.0);
+        s.move_item(2, 0);
         s.reset();
-        assert_eq!(s.order.get(), vec![0, 1, 2, 3]);
+        assert_eq!(names(&s), ["Mic boost 2", "Mic boost", "EQ"]);
+        assert_eq!(s.section("Mic boost 2").params[0].get(), 0.0);
     }
 
     #[test]
     fn fold_state_is_remembered_but_not_touched_by_reset() {
-        let make = || Settings::new(vec![Section::new("EQ", vec![]).unfolded(), Section::new("Gate", vec![])]);
+        let make = || rack(&["EQ", "Limiter"]);
         let a = make();
-        assert!(a.section("EQ").open.load(Relaxed) && !a.section("Gate").open.load(Relaxed));
+        assert!(a.section("EQ").open.load(Relaxed) && !a.section("Limiter").open.load(Relaxed));
         a.section("EQ").open.store(false, Relaxed);
-        a.section("Gate").open.store(true, Relaxed);
+        a.section("Limiter").open.store(true, Relaxed);
 
         let b = make();
         b.apply_text(&a.to_text(&[]));
         assert!(!b.section("EQ").open.load(Relaxed), "saved fold wins over the default");
-        assert!(b.section("Gate").open.load(Relaxed));
+        assert!(b.section("Limiter").open.load(Relaxed));
 
         b.reset();
-        assert!(b.section("Gate").open.load(Relaxed), "Reset is about sound, not layout");
+        assert!(b.section("Limiter").open.load(Relaxed), "Reset is about sound, not layout");
     }
 
     #[test]

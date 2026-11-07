@@ -35,6 +35,11 @@ pub struct DeepFilter {
     atten_lim_db: f32,
 }
 
+// SAFETY: `DfTract` is not `Send` only because tract keeps intermediate tensors in `Rc`. Every
+// such `Rc` is created inside this model and no clone is handed out, so moving the whole stage
+// moves every reference to them; it is never used from two threads at once.
+unsafe impl Send for DeepFilter {}
+
 impl DeepFilter {
     pub fn new(section: Arc<Section>) -> Result<Self> {
         let atten_lim_db = section.get(0);
