@@ -38,7 +38,11 @@ pub struct DeepFilter {
 impl DeepFilter {
     pub fn new(section: Arc<Section>) -> Result<Self> {
         let atten_lim_db = section.get(0);
-        let params = RuntimeParams::default_with_ch(1).with_atten_lim(atten_lim_db);
+        // Stock settings skip the deep filter above 20 dB local SNR. The mask alone then cuts
+        // loud speech by about 11 dB until the estimate falls back, which sounds like a stutter.
+        let stock = RuntimeParams::default_with_ch(1);
+        let (min_db, max_db) = (stock.min_db_thresh, stock.max_db_erb_thresh);
+        let params = stock.with_atten_lim(atten_lim_db).with_thresholds(min_db, max_db, max_db);
         let model = DfTract::new(DfParams::default(), &params)?;
         ensure!(
             (model.sr, model.hop_size, model.ch) == (SAMPLE_RATE as usize, HOP, 1),
@@ -124,6 +128,15 @@ mod tests {
             tail_after < tail_before * 0.25,
             "noise {tail_before} -> {tail_after}, expected a clear reduction"
         );
+    }
+
+    #[test]
+    fn mask_never_runs_without_the_deep_filter() {
+        let df = DeepFilter::new(Arc::new(section())).expect("model loads");
+        for lsnr in -20..=40 {
+            let (mask, _, deep_filter) = df.model.apply_stages(lsnr as f32);
+            assert!(!mask || deep_filter, "mask alone at {lsnr} dB local SNR");
+        }
     }
 
     #[test]
