@@ -18,13 +18,15 @@ Early. Working today:
 
 - Capture from any recording device, process, play to any playback device (WASAPI, shared mode)
 - Pluggable chain: every stage implements `Processor`, so stages can be swapped, reordered or stacked
-- Gain and limiter stages
-- DeepFilterNet3 noise removal (about 1.6% of one core in testing, around 40 ms added latency, estimated)
+- Stages, in order: DeepFilterNet3 noise removal, mic boost, EQ, de-esser, 3-band compressor, limiter
+- Simple window: device pickers, start/stop, level meters, per-stage on/off and sliders
+- Settings and device choices are saved to `%APPDATA%\middlemic\settings.ini`
+- Whole chain costs about 4% of one core in testing (DeepFilterNet about 1.6% of that),
+  and the DSP thread runs at below-normal priority
 
 Planned:
 
-- [ ] EQ, de-esser, multiband compressor
-- [ ] Small UI, tray icon, presets
+- [ ] Tray icon, presets, start minimised, auto-start
 - [ ] One-time setup that offers to install VB-Cable
 - [ ] Optional chain item that hosts third-party plugins (CLAP / VST3)
 
@@ -49,10 +51,9 @@ cargo test
 ## Use
 
 ```sh
-middlemic.exe devices
-middlemic.exe run --input "Headset Microphone" --output "CABLE Input" --gain-db 6
-middlemic.exe run --denoise-limit-db 30   # gentler noise removal
-middlemic.exe run --no-denoise            # skip noise removal
+middlemic.exe                  # opens the window
+middlemic.exe devices          # list device names
+middlemic.exe run --input "Headset Microphone" --output "CABLE Input"   # no window, saved settings
 ```
 
 DeepFilterNet comes from a pinned git commit of

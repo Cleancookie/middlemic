@@ -1,27 +1,35 @@
 use super::Processor;
+use crate::settings::{Param, Section};
 use anyhow::{Result, ensure};
 use df::tract::{DfParams, DfTract, RuntimeParams};
 use ndarray::{Array2, ArrayView2};
+use std::sync::Arc;
+
+pub const NAME: &str = "Noise removal";
 
 const SAMPLE_RATE: u32 = 48_000;
 const HOP: usize = 480;
 /// 20 ms STFT window plus 20 ms lookahead. Estimated from the model config, not measured.
 const LATENCY_SAMPLES: usize = 4 * HOP;
 
+pub fn section() -> Section {
+    Section::new(NAME, vec![Param::new("Max reduction", "dB", 0.0, 100.0, 100.0)])
+}
+
 /// DeepFilterNet3 noise suppression. Expects 48 kHz mono, in multiples of 480 samples.
+/// "Max reduction" caps how much noise is removed; 25-40 dB tends to sound more natural
+/// than full suppression.
 pub struct DeepFilter {
+    section: Arc<Section>,
     model: DfTract,
     out: Array2<f32>,
+    atten_lim_db: f32,
 }
 
 impl DeepFilter {
-    /// `atten_lim_db` caps how much noise is removed; `None` removes as much as it can.
-    /// A limit of 25-40 dB tends to sound more natural than full suppression.
-    pub fn new(atten_lim_db: Option<f32>) -> Result<Self> {
-        let mut params = RuntimeParams::default_with_ch(1);
-        if let Some(db) = atten_lim_db {
-            params = params.with_atten_lim(db);
-        }
+    pub fn new(section: Arc<Section>) -> Result<Self> {
+        let atten_lim_db = section.get(0);
+        let params = RuntimeParams::default_with_ch(1).with_atten_lim(atten_lim_db);
         let model = DfTract::new(DfParams::default(), &params)?;
         ensure!(
             (model.sr, model.hop_size, model.ch) == (SAMPLE_RATE as usize, HOP, 1),
@@ -31,15 +39,17 @@ impl DeepFilter {
             model.ch
         );
         Ok(Self {
+            section,
             model,
             out: Array2::zeros((1, HOP)),
+            atten_lim_db,
         })
     }
 }
 
 impl Processor for DeepFilter {
-    fn name(&self) -> &str {
-        "deepfilternet3"
+    fn enabled(&self) -> bool {
+        self.section.is_enabled()
     }
 
     fn prepare(&mut self, sample_rate: u32) {
@@ -48,6 +58,11 @@ impl Processor for DeepFilter {
 
     fn process(&mut self, samples: &mut [f32]) {
         debug_assert_eq!(samples.len() % HOP, 0);
+        let limit = self.section.get(0);
+        if limit != self.atten_lim_db {
+            self.atten_lim_db = limit;
+            self.model.set_atten_lim(limit);
+        }
         for chunk in samples.chunks_exact_mut(HOP) {
             let input = ArrayView2::from_shape((1, HOP), chunk).expect("chunk is one hop");
             if self.model.process(input, self.out.view_mut()).is_ok() {
@@ -84,7 +99,7 @@ mod tests {
 
     #[test]
     fn removes_steady_noise() {
-        let mut df = DeepFilter::new(None).expect("model loads");
+        let mut df = DeepFilter::new(Arc::new(section())).expect("model loads");
         df.prepare(48_000);
         let mut audio = noise(HOP * 300, 0.1);
         let tail_before = rms(&audio[HOP * 200..]);
@@ -104,7 +119,9 @@ mod tests {
 
     #[test]
     fn output_is_finite() {
-        let mut df = DeepFilter::new(Some(30.0)).expect("model loads");
+        let s = Arc::new(section());
+        s.params[0].set(30.0);
+        let mut df = DeepFilter::new(s).expect("model loads");
         let mut audio = noise(HOP * 20, 0.5);
         df.process(&mut audio);
         assert!(audio.iter().all(|s| s.is_finite()));

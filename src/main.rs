@@ -3,6 +3,9 @@
 #[cfg(windows)]
 mod audio;
 mod dsp;
+mod settings;
+#[cfg(windows)]
+mod ui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -10,54 +13,54 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(about = "Lightweight mic processing: headset in, cleaned audio out to a virtual cable")]
 struct Cli {
+    /// With no command, opens the window.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
     /// List recording and playback devices.
     Devices,
-    /// Capture the mic, run the chain, play to the output device.
+    /// Run without a window, using the settings saved by the UI.
     Run {
         /// Part of the mic's name. Default: the system default recording device.
         #[arg(long)]
         input: Option<String>,
         /// Part of the output device's name, e.g. "CABLE Input".
         #[arg(long)]
-        output: Option<String>,
-        /// Mic boost in dB.
-        #[arg(long, default_value_t = 0.0)]
-        gain_db: f32,
-        /// Skip DeepFilterNet noise removal.
-        #[arg(long)]
-        no_denoise: bool,
-        /// Cap noise removal at this many dB (25-40 sounds more natural). Default: no cap.
-        #[arg(long)]
-        denoise_limit_db: Option<f32>,
+        output: String,
     },
 }
 
 #[cfg(windows)]
 fn main() -> Result<()> {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let settings = settings::Settings::new(dsp::default_sections());
     match Cli::parse().command {
-        Command::Devices => audio::list_devices(),
-        Command::Run {
-            input,
-            output,
-            gain_db,
-            no_denoise,
-            denoise_limit_db,
-        } => {
-            audio::run(input, output, move || {
-                let mut chain = dsp::Chain::new();
-                if !no_denoise {
-                    chain.push(dsp::DeepFilter::new(denoise_limit_db)?);
-                }
-                chain.push(dsp::Gain::new(gain_db));
-                chain.push(dsp::Limiter::new(-1.0));
-                Ok(chain)
-            })
+        None => {
+            // SAFETY: detaches the console a double-click launch created; no pointers involved.
+            unsafe { windows_sys::Win32::System::Console::FreeConsole() };
+            ui::run(settings).map_err(|e| anyhow::anyhow!("{e}"))
+        }
+        Some(Command::Devices) => {
+            let devices = audio::list_devices()?;
+            println!("Recording devices:");
+            devices.inputs.iter().for_each(|d| println!("  {d}"));
+            println!("Playback devices:");
+            devices.outputs.iter().for_each(|d| println!("  {d}"));
+            Ok(())
+        }
+        Some(Command::Run { input, output }) => {
+            settings.apply_text(&std::fs::read_to_string(settings::settings_path()).unwrap_or_default());
+            let engine = audio::Engine::start(input, output, Arc::clone(&settings))?;
+            eprintln!("running; press Ctrl-C to stop");
+            while engine.is_running() {
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            anyhow::bail!(engine.error().unwrap_or_else(|| "stopped".into()))
         }
     }
 }

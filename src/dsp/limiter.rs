@@ -1,18 +1,26 @@
 use super::Processor;
+use crate::settings::{Param, Section};
+use std::sync::Arc;
+
+pub const NAME: &str = "Limiter";
+
+const RELEASE_MS: f32 = 80.0;
+
+pub fn section() -> Section {
+    Section::new(NAME, vec![Param::new("Ceiling", "dB", -12.0, 0.0, -1.0)])
+}
 
 /// Safety limiter: instant attack, smooth release. Keeps boosted mics from clipping.
 pub struct Limiter {
-    ceiling: f32,
-    release_ms: f32,
+    section: Arc<Section>,
     release_coeff: f32,
     gain: f32,
 }
 
 impl Limiter {
-    pub fn new(ceiling_db: f32) -> Self {
+    pub fn new(section: Arc<Section>) -> Self {
         let mut limiter = Self {
-            ceiling: 10f32.powf(ceiling_db / 20.0),
-            release_ms: 80.0,
+            section,
             release_coeff: 0.0,
             gain: 1.0,
         };
@@ -22,20 +30,21 @@ impl Limiter {
 }
 
 impl Processor for Limiter {
-    fn name(&self) -> &str {
-        "limiter"
+    fn enabled(&self) -> bool {
+        self.section.is_enabled()
     }
 
     fn prepare(&mut self, sample_rate: u32) {
-        let release_samples = self.release_ms * 0.001 * sample_rate as f32;
+        let release_samples = RELEASE_MS * 0.001 * sample_rate as f32;
         self.release_coeff = (-1.0 / release_samples).exp();
     }
 
     fn process(&mut self, samples: &mut [f32]) {
+        let ceiling = 10f32.powf(self.section.get(0) / 20.0);
         for s in samples {
             let peak = s.abs();
-            let target = if peak > self.ceiling {
-                self.ceiling / peak
+            let target = if peak > ceiling {
+                ceiling / peak
             } else {
                 1.0
             };
@@ -55,7 +64,9 @@ mod tests {
 
     #[test]
     fn never_exceeds_ceiling() {
-        let mut l = Limiter::new(-3.0);
+        let s = Arc::new(section());
+        s.params[0].set(-3.0);
+        let mut l = Limiter::new(s);
         let ceiling = 10f32.powf(-3.0 / 20.0);
         let mut buf: Vec<f32> = (0..4800)
             .map(|i| if i % 97 == 0 { 1.0 } else { 0.9 })
@@ -66,7 +77,7 @@ mod tests {
 
     #[test]
     fn quiet_signal_passes_untouched() {
-        let mut l = Limiter::new(-1.0);
+        let mut l = Limiter::new(Arc::new(section()));
         let mut buf = vec![0.1_f32; 480];
         l.process(&mut buf);
         assert!(buf.iter().all(|s| (*s - 0.1).abs() < 1e-6));

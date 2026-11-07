@@ -23,4 +23,6 @@ tract-hir = "=0.21.4"
 deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", rev = "7b14b895fe7fc42cab72b4a4c1e49c982bd6404b", default-features = false, features = ["tract", "default-model"] }
 
 [target.'cfg(windows)'.dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
 wasapi = "0.27.0"
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_System_Threading"] }

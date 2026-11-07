@@ -1,25 +1,40 @@
 use super::Processor;
+use crate::settings::{Param, Section};
+use std::sync::Arc;
 
+pub const NAME: &str = "Mic boost";
+
+pub fn section() -> Section {
+    Section::new(NAME, vec![Param::new("Boost", "dB", 0.0, 30.0, 0.0)])
+}
+
+/// Smoothed gain, so dragging the slider does not click.
 pub struct Gain {
-    linear: f32,
+    section: Arc<Section>,
+    current: f32,
 }
 
 impl Gain {
-    pub fn new(db: f32) -> Self {
-        Self {
-            linear: 10f32.powf(db / 20.0),
-        }
+    pub fn new(section: Arc<Section>) -> Self {
+        let current = Self::target(&section);
+        Self { section, current }
+    }
+
+    fn target(section: &Section) -> f32 {
+        10f32.powf(section.get(0) / 20.0)
     }
 }
 
 impl Processor for Gain {
-    fn name(&self) -> &str {
-        "gain"
+    fn enabled(&self) -> bool {
+        self.section.is_enabled()
     }
 
     fn process(&mut self, samples: &mut [f32]) {
+        let target = Self::target(&self.section);
         for s in samples {
-            *s *= self.linear;
+            self.current += (target - self.current) * 0.001;
+            *s *= self.current;
         }
     }
 }
@@ -30,9 +45,22 @@ mod tests {
 
     #[test]
     fn six_db_roughly_doubles() {
-        let mut g = Gain::new(6.0206);
+        let s = Arc::new(section());
+        s.params[0].set(6.0206);
+        let mut g = Gain::new(s);
         let mut buf = [0.25_f32];
         g.process(&mut buf);
         assert!((buf[0] - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn slider_move_ramps_instead_of_jumping() {
+        let s = Arc::new(section());
+        let mut g = Gain::new(s.clone());
+        s.params[0].set(20.0);
+        let mut buf = [1.0_f32; 4_800];
+        g.process(&mut buf);
+        assert!(buf[0] < 1.05, "first sample jumped to {}", buf[0]);
+        assert!(buf[4_799] > 9.0, "never reached target: {}", buf[4_799]);
     }
 }
