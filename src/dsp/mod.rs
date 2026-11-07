@@ -15,7 +15,8 @@ mod multiband;
 mod rnnoise;
 
 pub use deepfilter::DeepFilter;
-pub use dpdfnet::DpdfNet;
+#[allow(unused_imports)] // The download button is in the Windows-only window.
+pub use dpdfnet::{DpdfNet, LIGHT as DPDFNET, download_dir as model_download_dir, model_installed};
 pub use echo::EchoCancel;
 #[allow(unused_imports)] // Used by the Windows-only window.
 pub use deesser::{DeEsser, NAME as DEESSER_NAME, frequency_hz as deesser_frequency_hz};

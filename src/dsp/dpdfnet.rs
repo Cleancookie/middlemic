@@ -6,7 +6,10 @@ use realfft::num_complex::Complex32;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tract_onnx::prelude::*;
+
+const SEARCH_EVERY: Duration = Duration::from_secs(1);
 
 const SAMPLE_RATE: u32 = 48_000;
 const HOP: usize = 480;
@@ -26,12 +29,30 @@ const DEFAULT_MAX_REDUCTION_DB: f32 = 18.0;
 pub struct Variant {
     pub name: &'static str,
     pub file: &'static str,
+    /// A fixed revision of the Hugging Face repo, so the checksum below stays true.
+    pub url: &'static str,
+    pub sha256: &'static str,
+    pub megabytes: u32,
 }
 
 pub const LIGHT: Variant = Variant {
     name: "Noise removal (DPDFNet)",
     file: "dpdfnet2_48khz_hr.onnx",
+    url: "https://huggingface.co/Ceva-IP/DPDFNet/resolve/dd6818d00f50c836fed43a6243ebe49116de5964/onnx/dpdfnet2_48khz_hr.onnx",
+    sha256: "7f0575a5cec0ba4ffd8f8bd657e06d007e4ccdd955d76faab922b9d3291dc14b",
+    megabytes: 10,
 };
+
+/// Where the app's own download lands, and the last place looked at.
+pub fn download_dir() -> PathBuf {
+    crate::settings::settings_path()
+        .parent()
+        .map_or_else(|| PathBuf::from("models"), |dir| dir.join("models"))
+}
+
+pub fn model_installed(variant: &Variant) -> bool {
+    find_model(variant.file).is_ok()
+}
 
 /// Off by default: an alternative to the stock "Noise removal", for trying side by side.
 pub fn section(variant: Variant) -> Section {
@@ -52,9 +73,7 @@ fn model_dirs() -> Vec<PathBuf> {
         dirs.push(exe.join("models"));
         dirs.push(exe);
     }
-    if let Some(dir) = crate::settings::settings_path().parent() {
-        dirs.push(dir.join("models"));
-    }
+    dirs.push(download_dir());
     dirs
 }
 
@@ -62,7 +81,10 @@ fn find_model(file: &str) -> Result<PathBuf> {
     let dirs = model_dirs();
     dirs.iter().map(|d| d.join(file)).find(|p| p.is_file()).ok_or_else(|| {
         let searched: Vec<_> = dirs.iter().map(|d| d.display().to_string()).collect();
-        anyhow!("Model file {file} not found. Put it in one of: {}", searched.join("  |  "))
+        anyhow!(
+            "Model file {file} not found. Use Download below, or put it in one of: {}",
+            searched.join("  |  ")
+        )
     })
 }
 
@@ -201,7 +223,10 @@ pub struct DpdfNet {
     section: Arc<Section>,
     variant: Variant,
     net: Option<Net>,
-    failed: bool,
+    /// The file is there but would not load: do not try again.
+    broken: bool,
+    /// A missing file is looked for again once a second, so a download is picked up live.
+    last_search: Option<Instant>,
     stft: Stft,
     cap: ReductionCap,
     cap_db: f32,
@@ -219,7 +244,8 @@ impl DpdfNet {
             section,
             variant,
             net: None,
-            failed: false,
+            broken: false,
+            last_search: None,
             stft: Stft::new(),
             cap,
             cap_db,
@@ -230,17 +256,27 @@ impl DpdfNet {
     }
 
     fn load(&mut self) {
-        let loaded = find_model(self.variant.file).and_then(|path| Net::load(&path));
-        match loaded {
+        self.last_search = Some(Instant::now());
+        let path = match find_model(self.variant.file) {
+            Ok(path) => path,
+            Err(missing) => return self.section.set_status(format!("{missing:#}")),
+        };
+        match Net::load(&path) {
             Ok(net) => {
                 self.net = Some(net);
                 self.section.set_status("");
             }
             Err(err) => {
-                self.failed = true;
+                self.broken = true;
                 self.section.set_status(format!("{err:#}"));
             }
         }
+    }
+
+    fn should_look_for_model(&self) -> bool {
+        self.net.is_none()
+            && !self.broken
+            && self.last_search.is_none_or(|at| at.elapsed() >= SEARCH_EVERY)
     }
 }
 
@@ -255,7 +291,7 @@ impl Processor for DpdfNet {
 
     fn process(&mut self, samples: &mut [f32]) {
         debug_assert_eq!(samples.len() % HOP, 0);
-        if self.net.is_none() && !self.failed {
+        if self.should_look_for_model() {
             self.load();
         }
         let Some(net) = self.net.as_mut() else {
@@ -313,13 +349,25 @@ mod tests {
     #[test]
     fn a_missing_model_is_reported_and_audio_passes_through() {
         let section = Arc::new(section(LIGHT));
-        let mut stage = DpdfNet::new(section.clone(), Variant { name: LIGHT.name, file: "nope.onnx" });
+        let mut stage = DpdfNet::new(section.clone(), Variant { file: "nope.onnx", ..LIGHT });
         let mut audio = vec![0.25; HOP * 3];
         stage.process(&mut audio);
         assert_eq!(audio, vec![0.25; HOP * 3]);
         assert!(section.status().contains("nope.onnx"), "{}", section.status());
         assert!(section.open.load(std::sync::atomic::Ordering::Relaxed), "row unfolds to show it");
         assert_eq!(stage.latency_samples(), 0);
+        assert!(!stage.should_look_for_model(), "searched a moment ago, so waits");
+        stage.last_search = Some(Instant::now() - 2 * SEARCH_EVERY);
+        assert!(stage.should_look_for_model(), "a missing model is looked for again");
+        stage.broken = true;
+        assert!(!stage.should_look_for_model(), "a model that failed to load is not retried");
+    }
+
+    #[test]
+    fn the_download_is_pinned_and_checksummed() {
+        assert_eq!(LIGHT.sha256.len(), 64);
+        assert!(LIGHT.url.ends_with(LIGHT.file));
+        assert!(!LIGHT.url.contains("/main/"), "must name a revision");
     }
 
     #[test]

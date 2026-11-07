@@ -42,6 +42,23 @@ fn download_script(work_dir: &str) -> String {
     )
 }
 
+/// Downloads `url` into `dir/file` through a `.part` file, and only moves it into place if its
+/// SHA-256 is `sha256`. Prints the final path.
+fn model_download_script(url: &str, dir: &str, file: &str, sha256: &str) -> String {
+    let (url, dir, file, sha) = (ps_quote(url), ps_quote(dir), ps_quote(file), ps_quote(&sha256.to_lowercase()));
+    format!(
+        "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; \
+         [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; \
+         $dir={dir}; New-Item -ItemType Directory -Force -Path $dir | Out-Null; \
+         $final=Join-Path $dir {file}; $part=$final + '.part'; \
+         Invoke-WebRequest -Uri {url} -OutFile $part -UseBasicParsing; \
+         $hash=(Get-FileHash -Algorithm SHA256 -LiteralPath $part).Hash.ToLower(); \
+         if($hash -ne {sha}){{ Remove-Item -LiteralPath $part -Force; \
+         throw ('the download is not the expected file (SHA-256 ' + $hash + ')') }}; \
+         Move-Item -LiteralPath $part -Destination $final -Force; Write-Output $final"
+    )
+}
+
 /// Runs the installer silently with an administrator (UAC) prompt, and waits for it.
 fn install_script(installer: &str) -> String {
     let exe = ps_quote(installer);
@@ -54,13 +71,14 @@ fn install_script(installer: &str) -> String {
 }
 
 #[cfg(windows)]
-pub use runner::{Progress, spawn_install};
+pub use runner::{Progress, spawn_install, spawn_model_download};
 
 #[cfg(windows)]
 mod runner {
     use super::*;
     use anyhow::{Result, anyhow, bail};
     use std::os::windows::process::CommandExt;
+    use std::path::PathBuf;
     use std::process::Command;
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -77,11 +95,26 @@ mod runner {
     }
 
     pub fn spawn_install() -> Arc<Mutex<Progress>> {
+        spawn_task(run)
+    }
+
+    /// Download a model file into `dir`, checked against `sha256`. The outcome is its path.
+    pub fn spawn_model_download(url: &'static str, dir: PathBuf, file: &'static str, sha256: &'static str) -> Arc<Mutex<Progress>> {
+        spawn_task(move |say| {
+            say(&format!("Downloading {file}…"));
+            let script = model_download_script(url, &dir.to_string_lossy(), file, sha256);
+            let (_, path) = powershell(&script).map_err(|e| anyhow!("download failed: {e}"))?;
+            Ok(format!("Saved {path}"))
+        })
+    }
+
+    /// Run `task` on its own thread, reporting through the returned progress.
+    fn spawn_task(task: impl FnOnce(&dyn Fn(&str)) -> Result<String> + Send + 'static) -> Arc<Mutex<Progress>> {
         let progress = Arc::new(Mutex::new(Progress::default()));
         let shared = progress.clone();
         thread::spawn(move || {
             let say = |m: &str| shared.lock().unwrap().message = m.to_string();
-            let outcome = run(&say).map_err(|e| format!("{e:#}"));
+            let outcome = task(&say).map_err(|e| format!("{e:#}"));
             shared.lock().unwrap().outcome = Some(outcome);
         });
         progress
@@ -181,6 +214,30 @@ mod tests {
         let out = std::env::var("MIDDLEMIC_PROBE_OUT").unwrap();
         let dir = std::env::var("MIDDLEMIC_PROBE_DIR").unwrap();
         std::fs::write(out, download_script(&dir)).unwrap();
+    }
+
+    #[test]
+    fn model_download_checks_the_hash_before_moving_the_file_into_place() {
+        let s = model_download_script("https://example.test/m.onnx", r"C:\Users\O'Brien\m", "m.onnx", "ABC123");
+        assert!(!s.contains('"'));
+        assert!(s.contains("https://example.test/m.onnx") && s.contains("'abc123'"), "{s}");
+        assert!(s.contains(r"'C:\Users\O''Brien\m'"));
+        let check = s.find("-ne").unwrap();
+        let place = s.find("Move-Item").unwrap();
+        let remove = s.find("Remove-Item").unwrap();
+        assert!(check < remove && remove < place, "a wrong file is deleted, never moved into place");
+    }
+
+    /// Writes the real model download script to run under PowerShell:
+    /// `MIDDLEMIC_PROBE_OUT=script.ps1 MIDDLEMIC_PROBE_DIR=/out MIDDLEMIC_PROBE_SHA=<hash> cargo test write_model_probe -- --ignored`
+    #[test]
+    #[ignore]
+    fn write_model_probe() {
+        let model = crate::dsp::DPDFNET;
+        let out = std::env::var("MIDDLEMIC_PROBE_OUT").unwrap();
+        let dir = std::env::var("MIDDLEMIC_PROBE_DIR").unwrap();
+        let sha = std::env::var("MIDDLEMIC_PROBE_SHA").unwrap_or_else(|_| model.sha256.to_string());
+        std::fs::write(out, model_download_script(model.url, &dir, model.file, &sha)).unwrap();
     }
 
     #[test]

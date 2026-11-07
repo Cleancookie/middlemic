@@ -132,13 +132,14 @@ impl Section {
         self.status.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
-    /// Show `message` in the stage's row, unfolding it so it is seen. An empty message clears it.
+    /// Show `message` in the stage's row, unfolding it the first time so it is seen (not again,
+    /// or a row the user folded would keep springing open). An empty message clears it.
     pub fn set_status(&self, message: impl Into<String>) {
         let message = message.into();
-        if !message.is_empty() {
-            self.open.store(true, Relaxed);
-        }
         if let Ok(mut status) = self.status.lock() {
+            if !message.is_empty() && *status != message {
+                self.open.store(true, Relaxed);
+            }
             *status = message;
         }
     }

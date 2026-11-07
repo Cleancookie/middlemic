@@ -31,6 +31,46 @@ pub fn run(settings: Arc<Settings>) -> eframe::Result {
     )
 }
 
+/// The download button for the DPDFNet model, shown until the file is installed. The running
+/// stage looks for the file again every second, so it starts working as soon as it lands.
+fn model_row(ui: &mut egui::Ui, download: &mut Option<Arc<Mutex<Progress>>>) {
+    let model = &dsp::DPDFNET;
+    if dsp::model_installed(model) {
+        *download = None;
+        return;
+    }
+    ui.label(format!(
+        "The model file ({} MB, Apache-2.0, from huggingface.co/Ceva-IP/DPDFNet) is not installed.",
+        model.megabytes
+    ));
+    let state = download.as_ref().map(|p| {
+        let p = p.lock().unwrap();
+        (p.message.clone(), p.outcome.clone())
+    });
+    match state {
+        Some((message, None)) => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(message);
+            });
+        }
+        previous => {
+            if let Some((_, Some(Err(why)))) = &previous {
+                ui.colored_label(egui::Color32::LIGHT_RED, why);
+            }
+            let label = if previous.is_some() { "Try again" } else { "Download model" };
+            if ui.button(label).clicked() {
+                *download = Some(setup::spawn_model_download(
+                    model.url,
+                    dsp::model_download_dir(),
+                    model.file,
+                    model.sha256,
+                ));
+            }
+        }
+    }
+}
+
 /// The one-time virtual cable setup dialog.
 enum SetupState {
     Closed,
@@ -41,6 +81,8 @@ enum SetupState {
 
 struct App {
     setup: SetupState,
+    /// The DPDFNet model download, while there is one to show.
+    model_download: Option<Arc<Mutex<Progress>>>,
     eq_panel: EqPanel,
     rack: Rack,
     settings: Arc<Settings>,
@@ -80,6 +122,7 @@ impl App {
 
         let mut app = Self {
             setup: SetupState::Closed,
+            model_download: None,
             eq_panel: EqPanel::default(),
             rack: Rack::default(),
             settings,
@@ -346,9 +389,13 @@ impl eframe::App for App {
                 // The rack, in running order. Only the EQ has a custom body.
                 let settings = Arc::clone(&self.settings);
                 let eq_panel = &mut self.eq_panel;
+                let model_download = &mut self.model_download;
                 self.rack.show(ui, &settings, |ui, section, reductions| {
                     if section.name == dsp::EQ_NAME {
                         eq_panel.ui(ui, section, deesser_hz);
+                    } else if section.name == dsp::DPDFNET.name {
+                        model_row(ui, model_download);
+                        section_body(ui, section, reductions);
                     } else {
                         section_body(ui, section, reductions);
                     }
@@ -357,7 +404,11 @@ impl eframe::App for App {
         });
 
         // Meters need ~20 fps while running; otherwise just wake up to save settings.
-        let setting_up = matches!(self.setup, SetupState::Running(_));
+        let downloading = self
+            .model_download
+            .as_ref()
+            .is_some_and(|p| p.lock().unwrap().outcome.is_none());
+        let setting_up = matches!(self.setup, SetupState::Running(_)) || downloading;
         let next = if self.running() {
             50
         } else if setting_up {
