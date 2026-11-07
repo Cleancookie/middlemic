@@ -280,6 +280,47 @@ mod tests {
         }
     }
 
+    /// Frame-by-frame view of a stretch of the recording, output lined up with the input.
+    /// `MIDDLEMIC_TEST_AUDIO=<file> MIDDLEMIC_FROM=13.5 MIDDLEMIC_TO=15.5 cargo test --release inspect_window -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn inspect_window() {
+        let clip = decode(Path::new(&std::env::var("MIDDLEMIC_TEST_AUDIO").unwrap()));
+        let input = to_48k(&clip);
+        let secs = |name: &str, default: f32| {
+            std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+        };
+        let (from, to) = (secs("MIDDLEMIC_FROM", 13.5), secs("MIDDLEMIC_TO", 15.5));
+
+        let mut columns = Vec::new();
+        for cap in [100.0f32, 18.0] {
+            let settings = crate::settings::Settings::new(crate::dsp::default_sections());
+            only(&settings, &["Noise removal"]);
+            settings.section("Noise removal").params[0].set(cap);
+            let (output, _) = run(&input, &settings);
+            let lag = measure_lag(&input, &output);
+            let n = output.len() - lag;
+            columns.push((frame_levels_db(&input[..n]), frame_levels_db(&output[lag..lag + n])));
+        }
+        println!("time     input   out@100dB  change   out@18dB  change");
+        for k in (from * 100.0) as usize..(to * 100.0) as usize {
+            let input_db = columns[0].0[k];
+            let (o100, o18) = (columns[0].1[k], columns[1].1[k]);
+            let flag = |o: f32| if input_db - o > 10.0 { "<<" } else { "  " };
+            println!(
+                "{:>6.2}s {:>6.1}  {:>8.1}  {:>+6.1} {}  {:>8.1}  {:>+6.1} {}",
+                k as f32 * 0.01,
+                input_db,
+                o100,
+                o100 - input_db,
+                flag(o100),
+                o18,
+                o18 - input_db,
+                flag(o18)
+            );
+        }
+    }
+
     /// How much noise removal can we allow before it eats speech?
     /// `MIDDLEMIC_TEST_AUDIO=<file> MIDDLEMIC_TEST_OUT=<dir> cargo test --release analyse_cap -- --ignored --nocapture`
     #[test]
