@@ -33,9 +33,16 @@ Planned:
 ## Virtual cable
 
 Windows only lists recording devices that a driver provides, and unsigned drivers will
-not load with Secure Boot on. middlemic does not ship a driver. Use the playback side of
-an existing signed virtual cable such as [VB-Cable](https://vb-audio.com/Cable/), then
-pick its recording side in Discord. VB-Cable is not bundled or redistributed here.
+not load with Secure Boot on. middlemic does not ship its own driver. It plays into the
+playback side of a signed virtual cable, [VB-CABLE](https://vb-audio.com/Cable/), and you
+pick its recording side (`CABLE Output`) in Discord.
+
+The **Set up virtual cable** button downloads VB-CABLE from vb-audio.com, checks the
+installer's digital signature, and runs it with the usual Windows admin and driver-trust
+prompts. Nothing from VB-Audio is stored in this repository.
+
+VB-CABLE is donationware by VB-Audio ([www.vb-cable.com](https://vb-cable.com)). All
+participations are welcome.
 
 ## Build
 

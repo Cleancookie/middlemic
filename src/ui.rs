@@ -2,9 +2,10 @@
 
 use crate::audio::{self, Devices, Engine};
 use crate::settings::{Section, Settings};
+use crate::setup::{self, Progress};
 use eframe::egui;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const SYSTEM_DEFAULT: &str = "System default";
@@ -27,7 +28,16 @@ pub fn run(settings: Arc<Settings>) -> eframe::Result {
     )
 }
 
+/// The one-time virtual cable setup dialog.
+enum SetupState {
+    Closed,
+    Confirm,
+    Running(Arc<Mutex<Progress>>),
+    Finished(Result<String, String>),
+}
+
 struct App {
+    setup: SetupState,
     settings: Arc<Settings>,
     devices: Devices,
     input: String,
@@ -64,6 +74,7 @@ impl App {
             .unwrap_or_default();
 
         let mut app = Self {
+            setup: SetupState::Closed,
             settings,
             devices,
             input,
@@ -179,7 +190,99 @@ impl App {
             if ui.button("Reset all").clicked() {
                 self.settings.reset();
             }
+            if ui
+                .add_enabled(!self.running(), egui::Button::new("Set up virtual cable…"))
+                .clicked()
+            {
+                self.setup = SetupState::Confirm;
+            }
         });
+    }
+
+    /// Re-list devices, and point the output at the cable if it is there.
+    fn refresh_devices_after_setup(&mut self) {
+        if let Ok(devices) = audio::list_devices() {
+            if let Some(cable) = devices.outputs.iter().find(|n| n.contains(setup::CABLE_OUTPUT_NAME)) {
+                self.output = cable.clone();
+                self.status.clear();
+            }
+            self.devices = devices;
+        }
+    }
+
+    fn setup_window(&mut self, ctx: &egui::Context) {
+        let finished = match &self.setup {
+            SetupState::Running(progress) => progress.lock().unwrap().outcome.clone(),
+            _ => None,
+        };
+        if let Some(outcome) = finished {
+            self.refresh_devices_after_setup();
+            self.setup = SetupState::Finished(outcome);
+        }
+        if matches!(self.setup, SetupState::Closed) {
+            return;
+        }
+
+        let already = setup::cable_present(&self.devices.outputs);
+        let (mut install, mut close) = (false, false);
+        egui::Window::new("Set up virtual cable")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(380.0);
+                match &self.setup {
+                    SetupState::Confirm => {
+                        ui.label(
+                            "middlemic sends your cleaned mic to a virtual audio cable, \
+                             so Discord and games can pick it as a microphone.",
+                        );
+                        ui.add_space(6.0);
+                        ui.label("This will:");
+                        ui.label("  1. download VB-CABLE from vb-audio.com");
+                        ui.label("  2. check the installer's digital signature (Vincent Burel, VB-Audio's author)");
+                        ui.label("  3. install it. Windows will ask for administrator permission, then to trust the driver.");
+                        if already {
+                            ui.add_space(6.0);
+                            ui.colored_label(
+                                egui::Color32::YELLOW,
+                                "\"CABLE Input\" is already installed. This will install it again.",
+                            );
+                        }
+                        ui.add_space(6.0);
+                        ui.weak(
+                            "VB-CABLE is donationware by VB-Audio (www.vb-cable.com). \
+                             All participations are welcome.",
+                        );
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            install = ui.button("Install").clicked();
+                            close = ui.button("Cancel").clicked();
+                        });
+                    }
+                    SetupState::Running(progress) => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(progress.lock().unwrap().message.clone());
+                        });
+                    }
+                    SetupState::Finished(outcome) => {
+                        match outcome {
+                            Ok(message) => ui.colored_label(egui::Color32::LIGHT_GREEN, message),
+                            Err(message) => ui.colored_label(egui::Color32::LIGHT_RED, message),
+                        };
+                        ui.add_space(6.0);
+                        close = ui.button("Close").clicked();
+                    }
+                    SetupState::Closed => {}
+                }
+            });
+
+        if install {
+            self.setup = SetupState::Running(setup::spawn_install());
+        } else if close {
+            self.setup = SetupState::Closed;
+        }
     }
 
     fn meters(&mut self, ui: &mut egui::Ui) {
@@ -251,6 +354,8 @@ impl eframe::App for App {
             }
         }
         self.save_if_changed();
+        let ctx = ui.ctx().clone();
+        self.setup_window(&ctx);
 
         egui::CentralPanel::default().show(ui, |ui| {
             self.device_row(ui);
@@ -269,7 +374,14 @@ impl eframe::App for App {
         });
 
         // Meters need ~20 fps while running; otherwise just wake up to save settings.
-        let next = if self.running() { 50 } else { 1000 };
+        let setting_up = matches!(self.setup, SetupState::Running(_));
+        let next = if self.running() {
+            50
+        } else if setting_up {
+            200
+        } else {
+            1000
+        };
         ui.ctx().request_repaint_after(Duration::from_millis(next));
     }
 }

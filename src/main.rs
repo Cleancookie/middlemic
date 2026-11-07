@@ -4,6 +4,7 @@
 mod audio;
 mod dsp;
 mod settings;
+mod setup;
 #[cfg(windows)]
 mod ui;
 
