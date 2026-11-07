@@ -107,6 +107,8 @@ pub struct Section {
     pub advanced: AtomicBool,
     /// Whether the stage is unfolded in the rack. Saved with the other settings.
     pub open: AtomicBool,
+    /// A problem the stage wants the user to see, such as a missing model file. Empty when fine.
+    status: std::sync::Mutex<String>,
 }
 
 impl Section {
@@ -122,6 +124,22 @@ impl Section {
             quick_picks: Vec::new(),
             advanced: AtomicBool::new(false),
             open: AtomicBool::new(false),
+            status: std::sync::Mutex::new(String::new()),
+        }
+    }
+
+    pub fn status(&self) -> String {
+        self.status.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// Show `message` in the stage's row, unfolding it so it is seen. An empty message clears it.
+    pub fn set_status(&self, message: impl Into<String>) {
+        let message = message.into();
+        if !message.is_empty() {
+            self.open.store(true, Relaxed);
+        }
+        if let Ok(mut status) = self.status.lock() {
+            *status = message;
         }
     }
 

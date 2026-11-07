@@ -321,6 +321,54 @@ mod tests {
         }
     }
 
+    /// Every noise-removal stage on the same recording, lined up with the input.
+    /// `MIDDLEMIC_MODELS=<dir with the .onnx files> MIDDLEMIC_TEST_AUDIO=<file> [MIDDLEMIC_TEST_OUT=<dir>] cargo test --release compare_denoisers -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn compare_denoisers() {
+        let clip = decode(Path::new(&std::env::var("MIDDLEMIC_TEST_AUDIO").unwrap()));
+        let input = to_48k(&clip);
+        let out_dir = std::env::var("MIDDLEMIC_TEST_OUT").ok();
+        let stages = [
+            "Noise removal",
+            "Noise removal (DPDFNet)",
+            "Noise removal (RNNoise)",
+        ];
+        println!(
+            "{:<34} {:>4} {:>8} {:>10} {:>9} {:>10} {:>7}",
+            "stage", "cap", "lag ms", "pause dB", "speech dB", "dips>6dB", "RTF"
+        );
+        for stage in stages {
+            for cap in [100.0f32, 18.0] {
+                let settings = crate::settings::Settings::new(crate::dsp::default_sections());
+                only(&settings, &[stage]);
+                settings.section(stage).params[0].set(cap);
+                let started = std::time::Instant::now();
+                let (output, _) = run(&input, &settings);
+                let rtf = started.elapsed().as_secs_f32() / (input.len() as f32 / 48_000.0);
+                let lag = measure_lag(&input, &output);
+                let n = output.len() - lag;
+                let a = frame_levels_db(&input[..n]);
+                let b = frame_levels_db(&output[lag..lag + n]);
+                let mean = |sel: &dyn Fn(f32) -> bool| {
+                    let d: Vec<f32> = (0..a.len()).filter(|&k| sel(a[k])).map(|k| a[k] - b[k]).collect();
+                    (d.iter().sum::<f32>() / d.len().max(1) as f32, d)
+                };
+                let (pause, _) = mean(&|x| x < -42.0);
+                let (speech, d) = mean(&|x| x > -35.0);
+                let dips = d.iter().filter(|x| **x > 6.0).count();
+                println!(
+                    "{stage:<34} {cap:>4.0} {:>8.1} {pause:>10.1} {speech:>9.2} {dips:>10} {rtf:>7.3}",
+                    lag as f32 / 48.0
+                );
+                if let Some(dir) = &out_dir {
+                    let name: String = stage.chars().filter(|c| c.is_alphanumeric()).collect();
+                    write_wav(Path::new(&format!("{dir}/{name}_cap{cap:.0}.wav")), &output[lag..], 48_000);
+                }
+            }
+        }
+    }
+
     /// How much noise removal can we allow before it eats speech?
     /// `MIDDLEMIC_TEST_AUDIO=<file> MIDDLEMIC_TEST_OUT=<dir> cargo test --release analyse_cap -- --ignored --nocapture`
     #[test]

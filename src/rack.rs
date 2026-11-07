@@ -190,6 +190,10 @@ impl Rack {
 
 /// The plain controls: gain-reduction bars, quick picks and sliders.
 pub fn section_body(ui: &mut Ui, section: &Section, reductions: &[f32]) {
+    let status = section.status();
+    if !status.is_empty() {
+        ui.colored_label(Color32::LIGHT_RED, status);
+    }
     if !reductions.is_empty() {
         egui::Grid::new((section.name, "reduction")).num_columns(2).show(ui, |ui| {
             for (label, db) in section.reduction_labels.iter().zip(reductions) {
@@ -483,7 +487,17 @@ mod tests {
         let names: Vec<_> = settings.sections.iter().map(|s| s.name).collect();
         assert_eq!(
             names,
-            ["Echo cancellation", "Noise removal", "Mic boost", "EQ", "De-esser", "Compressor", "Limiter"]
+            [
+                "Echo cancellation",
+                "Noise removal",
+                "Noise removal (DPDFNet)",
+                "Noise removal (RNNoise)",
+                "Mic boost",
+                "EQ",
+                "De-esser",
+                "Compressor",
+                "Limiter"
+            ]
         );
         let ctx = egui::Context::default();
         let drawn = std::cell::Cell::new(0);

@@ -2,7 +2,9 @@
 //! runs them in order, so stages can be reordered, swapped or duplicated.
 
 mod biquad;
+mod cap;
 mod compressor;
+mod dpdfnet;
 mod deepfilter;
 mod deesser;
 mod echo;
@@ -10,8 +12,10 @@ mod eq;
 mod gain;
 mod limiter;
 mod multiband;
+mod rnnoise;
 
 pub use deepfilter::DeepFilter;
+pub use dpdfnet::DpdfNet;
 pub use echo::EchoCancel;
 #[allow(unused_imports)] // Used by the Windows-only window.
 pub use deesser::{DeEsser, NAME as DEESSER_NAME, frequency_hz as deesser_frequency_hz};
@@ -19,6 +23,7 @@ pub use eq::{BANDS, Eq, NAME as EQ_NAME, response_db};
 pub use gain::Gain;
 pub use limiter::Limiter;
 pub use multiband::Multiband;
+pub use rnnoise::RnNoise;
 
 use crate::settings::{Section, Settings};
 use anyhow::Result;
@@ -29,6 +34,8 @@ pub fn default_sections() -> Vec<Section> {
     vec![
         echo::section(),
         deepfilter::section(),
+        dpdfnet::section(dpdfnet::LIGHT),
+        rnnoise::section(),
         gain::section(),
         eq::section(),
         deesser::section(),
@@ -48,6 +55,8 @@ pub fn build_chain(settings: &Settings, reference: Option<HeapCons<f32>>) -> Res
         let section = section.clone();
         match section.name {
             echo::NAME => chain.push(EchoCancel::new(section, reference.take())),
+            name if name == dpdfnet::LIGHT.name => chain.push(DpdfNet::new(section, dpdfnet::LIGHT)),
+            rnnoise::NAME => chain.push(RnNoise::new(section)),
             deepfilter::NAME => chain.push(DeepFilter::new(section)?),
             gain::NAME => chain.push(Gain::new(section)),
             eq::NAME => chain.push(Eq::new(section)),

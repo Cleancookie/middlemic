@@ -20,6 +20,12 @@ Early. Working today:
 - Pluggable chain: every stage implements `Processor`, so stages can be swapped, reordered or stacked
 - Stages, in order: echo cancellation (off by default), DeepFilterNet3 noise removal, mic boost,
   EQ, de-esser, 3-band compressor, limiter
+- Three noise removers to compare, switch one on at a time: DeepFilterNet3 (the default),
+  DPDFNet and RNNoise (both off by default, each with its own Max reduction). DPDFNet needs
+  `dpdfnet2_48khz_hr.onnx` (Ceva, Apache-2.0, from huggingface.co/Ceva-IP/DPDFNet) in a
+  `models` folder next to the exe or in `%APPDATA%\middlemic\models`; the row says so if it
+  is missing. On a quiet test recording DPDFNet lost less speech than DeepFilterNet at the same
+  cap but costs about 10 times the CPU (40% of a core) and adds 50 ms; RNNoise costs about 1%
 - Echo cancellation (WebRTC AEC3, pure Rust) works without noise removal. It listens to what
   your speakers play through WASAPI loopback of the default playback device, so set Windows
   playback to your speakers or headphones, not to the virtual cable. If that is the output

@@ -15,6 +15,8 @@ clap = { version = "4.6.7", features = ["derive"] }
 ringbuf = "0.6.0"
 # Echo cancellation (WebRTC AEC3), pure Rust.
 sonora = "0.3.0"
+# RNNoise in Rust: a cheap noise-removal stage to compare against the neural ones.
+nnnoiseless = { version = "0.5.2", default-features = false }
 ndarray = "0.15"
 realfft = "3.5.1"
 # Also a plain dependency (eframe is Windows-only) so the drawing code can be tested headless.
