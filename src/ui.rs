@@ -4,6 +4,7 @@ use crate::audio::{self, Devices, Engine};
 use crate::cpu::CpuMeter;
 use crate::dsp;
 use crate::eq_panel::EqPanel;
+use crate::presets::{self, Presets};
 use crate::rack::{Rack, cross_button, section_body};
 use crate::settings::Settings;
 use crate::theme;
@@ -18,10 +19,13 @@ const SAVE_EVERY: Duration = Duration::from_secs(1);
 /// Meters fall at this fraction per redraw.
 const METER_DECAY: f32 = 0.85;
 /// Narrower than this (in points, so DPI and zoom are already counted) the top bar uses two rows.
-const WIDE: f32 = 760.0;
+const WIDE: f32 = 800.0;
 const LEVEL_WIDTH: f32 = 90.0;
 /// Levels, CPU readout and Start, roughly.
 const READOUTS_WIDTH: f32 = 260.0;
+const PRESET_WIDTH: f32 = 130.0;
+/// The refresh buttons, the preset menu button, separators and gaps between the pickers.
+const CONTROLS_WIDTH: f32 = 80.0 + 60.0;
 
 pub fn run(settings: Arc<Settings>) -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -93,7 +97,22 @@ enum SetupState {
     Finished(Result<String, String>),
 }
 
+/// A name prompt for Save as or Rename.
+struct NameDialog {
+    renaming: bool,
+    name: String,
+    error: String,
+}
+
+enum PresetDialog {
+    Closed,
+    Name(NameDialog),
+    ConfirmDelete,
+}
+
 struct App {
+    presets: Presets,
+    preset_dialog: PresetDialog,
     setup: SetupState,
     /// The DPDFNet model download, while there is one to show.
     model_download: Option<Arc<Mutex<Progress>>>,
@@ -136,7 +155,12 @@ impl App {
             .or_else(|| devices.outputs.iter().find(|n| n.contains("CABLE Input")).cloned())
             .unwrap_or_default();
 
+        let remembered = extras.get("preset").map_or("", String::as_str);
+        let presets = Presets::new(presets::presets_dir(), remembered);
+
         let mut app = Self {
+            presets,
+            preset_dialog: PresetDialog::Closed,
             setup: SetupState::Closed,
             model_download: None,
             eq_panel: EqPanel::default(),
@@ -191,6 +215,7 @@ impl App {
         let text = self.settings.to_text(&[
             ("device.input", &self.input),
             ("device.output", &self.output),
+            ("preset", self.presets.current()),
         ]);
         if text != self.saved_text {
             if let Some(dir) = self.save_path.parent() {
@@ -202,14 +227,16 @@ impl App {
         }
     }
 
-    /// input ⟳ | output ⟳ | levels | CPU | start. Below `WIDE` points the readouts wrap to a second row.
+    /// preset … | input ⟳ | output ⟳ | levels | CPU | start. Below `WIDE` points the readouts wrap to a second row.
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let width = ui.available_width();
         let wide = width >= WIDE;
-        // Room left for the two pickers after the refresh buttons, separators and (when wide) readouts.
-        let others = if wide { 80.0 + READOUTS_WIDTH } else { 80.0 };
-        let picker = ((width - others) / 2.0).clamp(80.0, 320.0);
+        // Room left for the two pickers after the preset picker, buttons, separators and (when wide) readouts.
+        let others = CONTROLS_WIDTH + PRESET_WIDTH + if wide { READOUTS_WIDTH } else { 0.0 };
+        let picker = ((width - others) / 2.0).clamp(64.0, 320.0);
         ui.horizontal(|ui| {
+            self.preset_picker(ui);
+            ui.separator();
             let locked = self.running();
             ui.add_enabled_ui(!locked, |ui| {
                 self.input_picker(ui, picker);
@@ -225,6 +252,137 @@ impl App {
         });
         if !wide {
             ui.horizontal(|ui| self.readouts(ui));
+        }
+    }
+
+    /// The preset list and its "…" menu. Loading works while running: the DSP follows the rack.
+    fn preset_picker(&mut self, ui: &mut egui::Ui) {
+        let mut chosen = None;
+        ui.allocate_ui(vec2(PRESET_WIDTH, ui.spacing().interact_size.y), |ui| {
+            egui::ComboBox::from_id_salt("preset")
+                .width(PRESET_WIDTH)
+                .truncate()
+                .selected_text(self.presets.label(&self.settings))
+                .show_ui(ui, |ui| {
+                    let current = self.presets.current();
+                    for name in presets::BUILTINS {
+                        if ui.selectable_label(current == name, format!("{name} (built-in)")).clicked() {
+                            chosen = Some(name.to_string());
+                        }
+                    }
+                    if !self.presets.user().is_empty() {
+                        ui.separator();
+                    }
+                    for name in self.presets.user() {
+                        if ui.selectable_label(current == name, name).clicked() {
+                            chosen = Some(name.clone());
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Preset: the whole rack. A dot means it has changed since it was loaded.");
+        });
+        if let Some(name) = chosen {
+            let result = self.presets.load(&self.settings, &name);
+            self.report(result);
+        }
+        self.preset_menu(ui);
+    }
+
+    fn preset_menu(&mut self, ui: &mut egui::Ui) {
+        let editable = self.presets.is_user();
+        let (mut save, mut save_as, mut rename, mut delete) = (false, false, false, false);
+        ui.menu_button("…", |ui| {
+            save = ui.add_enabled(editable, egui::Button::new("Save")).clicked();
+            save_as = ui.button("Save as…").clicked();
+            rename = ui.add_enabled(editable, egui::Button::new("Rename…")).clicked();
+            delete = ui.add_enabled(editable, egui::Button::new("Delete…")).clicked();
+            if save || save_as || rename || delete {
+                ui.close();
+            }
+        })
+        .response
+        .on_hover_text("Preset actions");
+        let dialog = |renaming, name| PresetDialog::Name(NameDialog { renaming, name, error: String::new() });
+        if save {
+            let result = self.presets.save(&self.settings);
+            self.report(result);
+        } else if save_as {
+            self.preset_dialog = dialog(false, String::new());
+        } else if rename {
+            self.preset_dialog = dialog(true, self.presets.current().to_string());
+        } else if delete {
+            self.preset_dialog = PresetDialog::ConfirmDelete;
+        }
+    }
+
+    /// Show a failed preset action in the status line.
+    fn report(&mut self, result: Result<(), String>) {
+        if let Err(message) = result {
+            self.status = message;
+        }
+    }
+
+    fn preset_window(&mut self, ctx: &egui::Context) {
+        let mut dialog = std::mem::replace(&mut self.preset_dialog, PresetDialog::Closed);
+        let mut keep_open = true;
+        match &mut dialog {
+            PresetDialog::Closed => return,
+            PresetDialog::Name(prompt) => {
+                let title = if prompt.renaming { "Rename preset" } else { "Save preset as" };
+                egui::Window::new(title)
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        let edit = ui.add(egui::TextEdit::singleline(&mut prompt.name).desired_width(240.0));
+                        if ui.memory(|m| m.focused().is_none()) {
+                            edit.request_focus();
+                        }
+                        let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if !prompt.error.is_empty() {
+                            ui.colored_label(theme::ERROR, &prompt.error);
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("OK").clicked() || enter {
+                                let result = if prompt.renaming {
+                                    self.presets.rename(&prompt.name)
+                                } else {
+                                    self.presets.save_as(&self.settings, &prompt.name)
+                                };
+                                match result {
+                                    Ok(()) => keep_open = false,
+                                    Err(message) => prompt.error = message,
+                                }
+                            }
+                            if ui.button("Cancel").clicked() {
+                                keep_open = false;
+                            }
+                        });
+                    });
+            }
+            PresetDialog::ConfirmDelete => {
+                egui::Window::new("Delete preset")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.label(format!("Delete \"{}\"? The rack stays as it is.", self.presets.current()));
+                        ui.horizontal(|ui| {
+                            if ui.button("Delete").clicked() {
+                                let result = self.presets.delete();
+                                self.report(result);
+                                keep_open = false;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                keep_open = false;
+                            }
+                        });
+                    });
+            }
+        }
+        if keep_open {
+            self.preset_dialog = dialog;
         }
     }
 
@@ -457,6 +615,7 @@ impl eframe::App for App {
         self.save_if_changed();
         let ctx = ui.ctx().clone();
         self.setup_window(&ctx);
+        self.preset_window(&ctx);
 
         self.update_levels();
         egui::Panel::top("devices").show(ui, |ui| self.top_bar(ui));
