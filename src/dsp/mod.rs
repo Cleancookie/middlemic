@@ -292,6 +292,24 @@ mod tests {
     }
 
     #[test]
+    fn every_kind_and_control_has_a_short_tooltip() {
+        let mut checked = 0;
+        for (name, make) in KINDS {
+            let section = make();
+            let texts = std::iter::once((name.to_string(), section.help))
+                .chain(section.params.iter().chain(&section.simple).map(|p| (format!("{name} / {}", p.name), p.help)))
+                .chain(section.quick_picks.iter().map(|(label, _, help)| (format!("{name} / {label}"), *help)));
+            for (what, help) in texts {
+                let words = help.split_whitespace().count();
+                assert!(words > 0, "{what} has no help text");
+                assert!(words <= 60, "{what} help is {words} words, keep it to 60");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 86, "only {checked} texts checked, are the kinds being walked?");
+    }
+
+    #[test]
     fn stages_run_in_order() {
         let ceiling = Arc::new(limiter::section());
         ceiling.params[0].set(-6.0);
