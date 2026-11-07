@@ -7,6 +7,7 @@ mod compressor_panel;
 mod cpu;
 mod dsp;
 mod eq_panel;
+mod feedback_panel;
 mod knob;
 #[cfg(test)]
 mod offline;

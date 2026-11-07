@@ -5,6 +5,7 @@ use crate::compressor_panel;
 use crate::cpu::CpuMeter;
 use crate::dsp;
 use crate::eq_panel::EqPanel;
+use crate::feedback_panel;
 use crate::presets::{self, Presets};
 use crate::rack::{Rack, cross_button, section_body};
 use crate::settings::Settings;
@@ -693,7 +694,7 @@ impl eframe::App for App {
             self.eq_panel.update(&self.settings.meters, running);
             let spectrum: Vec<f32> = if running { self.eq_panel.output_heights().collect() } else { Vec::new() };
             egui::ScrollArea::vertical().show(ui, |ui| {
-                // The rack, in running order. EQs and compressors have custom bodies over the shared spectrum.
+                // The rack, in running order. EQs, compressors and feedback suppressors have custom bodies.
                 let settings = Arc::clone(&self.settings);
                 let items = settings.items();
                 let eq_panel = &mut self.eq_panel;
@@ -704,6 +705,9 @@ impl eframe::App for App {
                         eq_panel.ui(ui, section, dsp::deesser_after(&items, item.id));
                     } else if item.kind() == dsp::multiband::NAME {
                         compressor_panel::ui(ui, section, reductions, &spectrum);
+                    } else if item.kind() == dsp::feedback::NAME {
+                        let position = items.iter().position(|i| i.id == item.id).unwrap_or(0);
+                        feedback_panel::ui(ui, section, theme::accent(position, items.len()));
                     } else if item.kind() == dsp::DPDFNET.name {
                         model_row(ui, model_download);
                         section_body(ui, section, reductions);
