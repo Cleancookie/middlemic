@@ -24,7 +24,11 @@ pub fn run(settings: Arc<Settings>) -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("middlemic")
             .with_inner_size([780.0, 860.0])
-            .with_min_inner_size([420.0, 360.0]),
+            .with_min_inner_size([420.0, 360.0])
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png"))
+                    .expect("bundled icon is a valid PNG"),
+            ),
         ..Default::default()
     };
     eframe::run_native(
