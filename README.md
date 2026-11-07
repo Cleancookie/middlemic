@@ -1,0 +1,58 @@
+# middlemic
+
+Lightweight mic processing for Windows. Takes your headset mic, runs it through a
+chain of effects (noise removal, EQ, de-esser, compression, limiter), and plays the
+result into a virtual audio cable so Discord, games and OBS can use it as a normal
+recording device.
+
+```
+Headset mic ──► middlemic (chain) ──► virtual cable ──► "CABLE Output" recording device
+```
+
+No DAW, no Virtual Audio Cable routing maze, no heavy plugin host. One small
+executable.
+
+## Status
+
+Early. Working today:
+
+- Capture from any recording device, process, play to any playback device (WASAPI, shared mode)
+- Pluggable chain: every stage implements `Processor`, so stages can be swapped, reordered or stacked
+- Gain and limiter stages
+
+Planned:
+
+- [ ] DeepFilterNet noise removal
+- [ ] EQ, de-esser, multiband compressor
+- [ ] Small UI, tray icon, presets
+- [ ] One-time setup that offers to install VB-Cable
+- [ ] Optional chain item that hosts third-party plugins (CLAP / VST3)
+
+## Virtual cable
+
+Windows only lists recording devices that a driver provides, and unsigned drivers will
+not load with Secure Boot on. middlemic does not ship a driver. Use the playback side of
+an existing signed virtual cable such as [VB-Cable](https://vb-audio.com/Cable/), then
+pick its recording side in Discord. VB-Cable is not bundled or redistributed here.
+
+## Build
+
+Cross-compiles from Linux or WSL:
+
+```sh
+rustup target add x86_64-pc-windows-gnu
+sudo apt install mingw-w64
+cargo build --release --target x86_64-pc-windows-gnu
+cargo test
+```
+
+## Use
+
+```sh
+middlemic.exe devices
+middlemic.exe run --input "Headset Microphone" --output "CABLE Input" --gain-db 6
+```
+
+## Licence
+
+MIT OR Apache-2.0, at your option.
