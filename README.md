@@ -12,6 +12,8 @@ Headset mic ──► middlemic (chain) ──► virtual cable ──► "CABLE
 No DAW, no Virtual Audio Cable routing maze, no heavy plugin host. One small
 executable.
 
+![middlemic running: preset picker and devices on top, a rack of mic boost, DPDFNet noise removal, EQ and the multiband compressor](docs/screenshot.png)
+
 ## Status
 
 Early. Working today:
