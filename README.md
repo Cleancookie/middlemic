@@ -20,7 +20,8 @@ Early. Working today:
 - Pluggable chain: every stage implements `Processor`, so stages can be swapped, reordered or stacked
 - Stages, in order: DeepFilterNet3 noise removal, mic boost, EQ, de-esser, 3-band compressor, limiter
 - Simple window: device pickers, start/stop, level meters, and the stages as a rack of rows
-  (fold arrow, bypass switch, reset, live gain-reduction readout); fold state is remembered
+  (fold arrow, bypass switch, reset, live gain-reduction readout); fold state is remembered.
+  Drag a row's grip to reorder the chain while it runs; the order is saved too
 - EQ screen in the style of a plugin EQ: response curve over a live spectrum, draggable band
   dots, a row of knobs per band, and a scrolling spectrogram with the de-esser frequency marked
 - Gain-reduction meters on the de-esser and compressor; the compressor has a Simple mode
@@ -71,6 +72,23 @@ middlemic.exe run --input "Headset Microphone" --output "CABLE Input"   # no win
 DeepFilterNet comes from a pinned git commit of
 [Rikorose/DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) (MIT OR Apache-2.0),
 because the crates.io release has no inference code.
+
+## Testing with a recording
+
+The tests include offline tools that run a real recording (anything `symphonia` can decode,
+such as `.m4a`) through the chain in 10 ms frames, as the live engine does. They are
+`#[ignore]`d, so run them by name:
+
+```sh
+export MIDDLEMIC_TEST_AUDIO=/path/to/recording.m4a MIDDLEMIC_TEST_OUT=/path/to/output-dir
+cargo test --release analyse_chain -- --ignored --nocapture   # per-frame timing, gating
+cargo test --release analyse_cap   -- --ignored --nocapture   # noise removal strength sweep
+cargo test --release measure_delay -- --ignored --nocapture   # real delay of each stage
+```
+
+Processed `.wav` files are written to `MIDDLEMIC_TEST_OUT` so you can listen to the result.
+When the output is lined up against the input, allow for the noise removal's 30 ms delay,
+or every word edge looks cut.
 
 ## Licence
 

@@ -221,6 +221,7 @@ fn dsp_loop(
 ) -> Result<()> {
     lower_priority();
     // Built here, not on the caller's thread: some stages are not `Send`.
+    let mut order_seen = settings.order.version();
     let mut chain = dsp::build_chain(&settings)?;
     chain.prepare(SAMPLE_RATE as u32);
     let meters = &settings.meters;
@@ -234,6 +235,10 @@ fn dsp_loop(
             meters.record_dropout(); // clocks drifted apart; old audio dropped to catch up
         }
         if input.occupied_len() >= FRAME && output.vacant_len() >= FRAME * 2 {
+            let order_now = settings.order.version();
+            if order_now != order_seen && chain.set_order(&settings.order.get()) {
+                order_seen = order_now; // a half-written order is refused and retried next frame
+            }
             input.pop_slice(&mut mono);
             meters.record_input(peak(&mono));
             meters.input_scope.write(&mono);

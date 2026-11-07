@@ -3,7 +3,7 @@
 use crate::audio::{self, Devices, Engine};
 use crate::dsp;
 use crate::eq_panel::EqPanel;
-use crate::rack::{rack_item, section_body};
+use crate::rack::{Rack, section_body};
 use crate::settings::Settings;
 use crate::setup::{self, Progress};
 use eframe::egui;
@@ -42,6 +42,7 @@ enum SetupState {
 struct App {
     setup: SetupState,
     eq_panel: EqPanel,
+    rack: Rack,
     settings: Arc<Settings>,
     devices: Devices,
     input: String,
@@ -80,6 +81,7 @@ impl App {
         let mut app = Self {
             setup: SetupState::Closed,
             eq_panel: EqPanel::default(),
+            rack: Rack::default(),
             settings,
             devices,
             input,
@@ -341,14 +343,16 @@ impl eframe::App for App {
             self.eq_panel.update(&self.settings.meters, running);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let deesser_hz = dsp::deesser_frequency_hz(&self.settings.section(dsp::DEESSER_NAME));
-                // The rack, in signal order. Only the EQ has a custom body.
-                for section in &self.settings.sections {
+                // The rack, in running order. Only the EQ has a custom body.
+                let settings = Arc::clone(&self.settings);
+                let eq_panel = &mut self.eq_panel;
+                self.rack.show(ui, &settings, |ui, section, reductions| {
                     if section.name == dsp::EQ_NAME {
-                        rack_item(ui, section, |ui, _| self.eq_panel.ui(ui, section, deesser_hz));
+                        eq_panel.ui(ui, section, deesser_hz);
                     } else {
-                        rack_item(ui, section, |ui, reductions| section_body(ui, section, reductions));
+                        section_body(ui, section, reductions);
                     }
-                }
+                });
             });
         });
 

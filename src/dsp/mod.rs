@@ -33,16 +33,24 @@ pub fn default_sections() -> Vec<Section> {
     ]
 }
 
-/// Build the chain in signal order. Call on the thread that will run it (see [`Processor`]).
+/// Build one stage for each of the settings' sections, then run them in the saved order.
+/// A stage's index in the chain is its section's index, which is what `Settings::order` uses.
+/// Call on the thread that will run it (see [`Processor`]).
 pub fn build_chain(settings: &Settings) -> Result<Chain> {
     let mut chain = Chain::new();
-    chain
-        .push(DeepFilter::new(settings.section(deepfilter::NAME))?)
-        .push(Gain::new(settings.section(gain::NAME)))
-        .push(Eq::new(settings.section(eq::NAME)))
-        .push(DeEsser::new(settings.section(deesser::NAME)))
-        .push(Multiband::new(settings.section(multiband::NAME)))
-        .push(Limiter::new(settings.section(limiter::NAME)));
+    for section in &settings.sections {
+        let section = section.clone();
+        match section.name {
+            deepfilter::NAME => chain.push(DeepFilter::new(section)?),
+            gain::NAME => chain.push(Gain::new(section)),
+            eq::NAME => chain.push(Eq::new(section)),
+            deesser::NAME => chain.push(DeEsser::new(section)),
+            multiband::NAME => chain.push(Multiband::new(section)),
+            limiter::NAME => chain.push(Limiter::new(section)),
+            other => anyhow::bail!("no stage is known for the section {other:?}"),
+        };
+    }
+    chain.set_order(&settings.order.get());
     Ok(chain)
 }
 
@@ -68,6 +76,8 @@ pub trait Processor {
 #[derive(Default)]
 pub struct Chain {
     stages: Vec<Box<dyn Processor>>,
+    /// Which stage runs at each position. Stages keep their state when this changes.
+    order: Vec<usize>,
 }
 
 impl Chain {
@@ -76,8 +86,20 @@ impl Chain {
     }
 
     pub fn push(&mut self, processor: impl Processor + 'static) -> &mut Self {
+        self.order.push(self.stages.len());
         self.stages.push(Box::new(processor));
         self
+    }
+
+    /// Run the stages in this order (indexes in the order they were pushed). Returns false
+    /// and changes nothing unless it lists every stage exactly once.
+    pub fn set_order(&mut self, order: &[usize]) -> bool {
+        let valid = order.len() == self.stages.len() && crate::settings::is_permutation(order);
+        if valid {
+            self.order.clear();
+            self.order.extend_from_slice(order);
+        }
+        valid
     }
 
     pub fn prepare(&mut self, sample_rate: u32) {
@@ -87,8 +109,11 @@ impl Chain {
     }
 
     pub fn process(&mut self, samples: &mut [f32]) {
-        for stage in self.stages.iter_mut().filter(|s| s.enabled()) {
-            stage.process(samples);
+        for &i in &self.order {
+            let stage = &mut self.stages[i];
+            if stage.enabled() {
+                stage.process(samples);
+            }
         }
     }
 
@@ -161,6 +186,52 @@ mod tests {
         chain.process(&mut buf);
         let expected = 0.1 * 10f32.powf(12.0 / 20.0);
         assert!((buf[47_999] - expected).abs() < 1e-3);
+    }
+
+    #[test]
+    fn order_decides_what_the_audio_does() {
+        let ceiling = Arc::new(limiter::section());
+        ceiling.params[0].set(-6.0); // about 0.5
+        let mut chain = Chain::new();
+        chain.push(boosted(6.0)).push(Limiter::new(ceiling));
+        chain.prepare(48_000);
+
+        let mut limited_last = vec![0.4_f32; 48_000];
+        chain.process(&mut limited_last);
+        assert!(limited_last[47_999] <= 0.51, "boost then limit stays under the ceiling");
+
+        // The limiter keeps its state across the change and takes a moment to ease off.
+        assert!(chain.set_order(&[1, 0]));
+        let mut limited_first = vec![0.4_f32; 48_000];
+        chain.process(&mut limited_first);
+        assert!(limited_first[47_999] > 0.75, "limit then boost is louder: {}", limited_first[47_999]);
+    }
+
+    #[test]
+    fn a_bad_order_changes_nothing() {
+        let mut chain = Chain::new();
+        chain.push(boosted(0.0)).push(boosted(0.0)).push(boosted(0.0));
+        assert!(!chain.set_order(&[0, 1]), "too short");
+        assert!(!chain.set_order(&[0, 1, 1]), "repeat");
+        assert!(!chain.set_order(&[0, 1, 5]), "out of range");
+        assert_eq!(chain.order, vec![0, 1, 2]);
+        assert!(chain.set_order(&[2, 0, 1]));
+    }
+
+    #[test]
+    fn the_built_chain_starts_in_the_saved_order() {
+        let settings = Settings::new(default_sections());
+        settings.order.set(&[5, 4, 3, 2, 1, 0]);
+        let chain = build_chain(&settings).unwrap();
+        assert_eq!(chain.order, vec![5, 4, 3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn every_default_section_has_a_stage_and_unknown_ones_are_an_error() {
+        assert!(build_chain(&Settings::new(default_sections())).is_ok());
+        let odd = Settings::new(vec![crate::settings::Section::new("Mystery", vec![])]);
+        let message = build_chain(&odd).err().expect("unknown section").to_string();
+        assert!(message.contains("Mystery"), "{message}");
     }
 
     #[test]

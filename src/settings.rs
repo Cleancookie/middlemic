@@ -4,7 +4,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{
+    AtomicBool, AtomicU32, AtomicUsize,
+    Ordering::{Acquire, Relaxed, Release},
+};
 
 /// `%APPDATA%\middlemic\settings.ini`, or the current directory if APPDATA is unset.
 pub fn settings_path() -> PathBuf {
@@ -270,17 +273,94 @@ impl Meters {
     }
 }
 
+/// True if `order` lists each of `0..order.len()` exactly once.
+pub fn is_permutation(order: &[usize]) -> bool {
+    let mut seen = vec![false; order.len()];
+    order.iter().all(|&i| i < seen.len() && !std::mem::replace(&mut seen[i], true))
+}
+
+/// `order` with the entry at position `from` moved into the gap before position `gap`
+/// (`0..=len`, where `len` means after the last).
+pub fn moved(order: &[usize], from: usize, gap: usize) -> Vec<usize> {
+    let mut out = order.to_vec();
+    let item = out.remove(from);
+    let at = if gap > from { gap - 1 } else { gap };
+    out.insert(at.min(out.len()), item);
+    out
+}
+
+/// The order stages run in, shared between the UI (which changes it) and the DSP thread
+/// (which follows it). Each position holds an index into [`Settings::sections`].
+pub struct Order {
+    slots: Vec<AtomicUsize>,
+    version: AtomicU32,
+}
+
+impl Order {
+    fn new(len: usize) -> Self {
+        Self {
+            slots: (0..len).map(AtomicUsize::new).collect(),
+            version: AtomicU32::new(0),
+        }
+    }
+
+    pub fn get(&self) -> Vec<usize> {
+        self.slots.iter().map(|s| s.load(Relaxed)).collect()
+    }
+
+    /// Changes whenever the order does, so the DSP thread can cheaply notice.
+    pub fn version(&self) -> u32 {
+        self.version.load(Acquire)
+    }
+
+    /// Ignored unless `order` is a permutation of the stages.
+    pub fn set(&self, order: &[usize]) {
+        if order.len() != self.slots.len() || !is_permutation(order) || self.get() == order {
+            return;
+        }
+        for (slot, &i) in self.slots.iter().zip(order) {
+            slot.store(i, Relaxed);
+        }
+        self.version.fetch_add(1, Release);
+    }
+}
+
 pub struct Settings {
     pub sections: Vec<Arc<Section>>,
     pub meters: Meters,
+    pub order: Order,
 }
 
 impl Settings {
     pub fn new(sections: Vec<Section>) -> Arc<Self> {
+        let order = Order::new(sections.len());
         Arc::new(Self {
             sections: sections.into_iter().map(Arc::new).collect(),
             meters: Meters::default(),
+            order,
         })
+    }
+
+    /// Stage names in running order, as saved to the settings file.
+    fn order_names(&self) -> String {
+        let names: Vec<_> = self.order.get().iter().map(|&i| self.sections[i].name).collect();
+        names.join(",")
+    }
+
+    /// Apply a saved order. Unknown names are skipped and stages missing from the list keep
+    /// their usual place at the end, so a settings file from another version still works.
+    fn set_order_by_names(&self, names: &str) {
+        let mut order: Vec<usize> = Vec::new();
+        for name in names.split(',').map(str::trim) {
+            if let Some(i) = self.sections.iter().position(|s| s.name == name) {
+                if !order.contains(&i) {
+                    order.push(i);
+                }
+            }
+        }
+        let missing: Vec<usize> = (0..self.sections.len()).filter(|i| !order.contains(i)).collect();
+        order.extend(missing);
+        self.order.set(&order);
     }
 
     pub fn section(&self, name: &str) -> Arc<Section> {
@@ -293,11 +373,12 @@ impl Settings {
 
     pub fn reset(&self) {
         self.sections.iter().for_each(|s| s.reset());
+        self.order.set(&(0..self.sections.len()).collect::<Vec<_>>());
     }
 
     /// INI-style text. `extras` are written before the first section.
     pub fn to_text(&self, extras: &[(&str, &str)]) -> String {
-        let mut out = String::new();
+        let mut out = format!("order={}\n", self.order_names());
         for (key, value) in extras {
             out.push_str(&format!("{key}={value}\n"));
         }
@@ -331,6 +412,7 @@ impl Settings {
                 continue;
             };
             match current {
+                None if key == "order" => self.set_order_by_names(value),
                 None => {
                     extras.insert(key.to_string(), value.to_string());
                 }
@@ -462,6 +544,62 @@ mod tests {
         s.read_latest(&mut out);
         let last = (Scope::LEN + 99) as f32;
         assert_eq!(out, [last - 2.0, last - 1.0, last]);
+    }
+
+    fn four_stages() -> Arc<Settings> {
+        Settings::new(["A", "B", "C", "D"].map(|n| Section::new(n, vec![])).into())
+    }
+
+    #[test]
+    fn moving_a_stage_lands_it_in_the_gap_that_was_pointed_at() {
+        let o = [0, 1, 2, 3];
+        assert_eq!(moved(&o, 3, 0), [3, 0, 1, 2], "to the very top");
+        assert_eq!(moved(&o, 0, 4), [1, 2, 3, 0], "to the very bottom");
+        assert_eq!(moved(&o, 0, 3), [1, 2, 0, 3], "just above the last");
+        assert_eq!(moved(&o, 2, 1), [0, 2, 1, 3], "up one");
+        for gap in [1, 2] {
+            assert_eq!(moved(&o, 1, gap), o, "dropping on itself changes nothing");
+        }
+    }
+
+    #[test]
+    fn only_real_permutations_are_accepted() {
+        assert!(is_permutation(&[2, 0, 1]));
+        assert!(!is_permutation(&[0, 0, 1]), "duplicate");
+        assert!(!is_permutation(&[0, 3, 1]), "out of range");
+        let s = four_stages();
+        let v = s.order.version();
+        s.order.set(&[0, 1, 2]);
+        s.order.set(&[0, 0, 1, 2]);
+        assert_eq!((s.order.get(), s.order.version()), (vec![0, 1, 2, 3], v), "rejected, untouched");
+        s.order.set(&[3, 2, 1, 0]);
+        assert_eq!(s.order.get(), vec![3, 2, 1, 0]);
+        assert_ne!(s.order.version(), v, "readers can tell it changed");
+    }
+
+    #[test]
+    fn order_is_saved_by_name_and_survives_added_or_removed_stages() {
+        let a = four_stages();
+        a.order.set(&[2, 0, 3, 1]);
+        let text = a.to_text(&[]);
+        assert!(text.starts_with("order=C,A,D,B"), "{text}");
+
+        let b = four_stages();
+        b.apply_text(&text);
+        assert_eq!(b.order.get(), vec![2, 0, 3, 1]);
+
+        // A file from another version: one stage unknown, one missing, one repeated.
+        let c = four_stages();
+        c.apply_text("order=D,Gone,D,B\n");
+        assert_eq!(c.order.get(), vec![3, 1, 0, 2], "unknown dropped, missing appended in usual order");
+    }
+
+    #[test]
+    fn reset_all_restores_the_usual_order() {
+        let s = four_stages();
+        s.order.set(&[3, 2, 1, 0]);
+        s.reset();
+        assert_eq!(s.order.get(), vec![0, 1, 2, 3]);
     }
 
     #[test]
