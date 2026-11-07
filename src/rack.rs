@@ -77,6 +77,19 @@ fn power_dot(ui: &mut Ui, on_t: f32, accent: Color32) -> Response {
     response.on_hover_text("On / bypass")
 }
 
+/// A small button with a painted ✕; egui's default fonts have no such glyph.
+pub fn cross_button(ui: &mut Ui) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+    let visuals = ui.style().interact(&response);
+    let painter = ui.painter();
+    painter.rect(rect, visuals.corner_radius, visuals.weak_bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+    let (c, r) = (rect.center(), 3.5);
+    let stroke = Stroke::new(1.5, visuals.fg_stroke.color);
+    painter.line_segment([c + vec2(-r, -r), c + vec2(r, r)], stroke);
+    painter.line_segment([c + vec2(-r, r), c + vec2(r, -r)], stroke);
+    response
+}
+
 /// Gap between a row's header and its controls; it folds away with them.
 const BODY_GAP: f32 = 8.0;
 
@@ -163,7 +176,7 @@ fn item_row(ui: &mut Ui, item: &Item, accent: Color32, body: impl FnOnce(&mut Ui
                     }
 
                     let remove = ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let remove = ui.small_button("✕").on_hover_text("Remove");
+                        let remove = cross_button(ui).on_hover_text("Remove");
                         if ui.small_button("Reset").clicked() {
                             section.reset();
                         }

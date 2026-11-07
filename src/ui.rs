@@ -4,7 +4,7 @@ use crate::audio::{self, Devices, Engine};
 use crate::cpu::CpuMeter;
 use crate::dsp;
 use crate::eq_panel::EqPanel;
-use crate::rack::{Rack, section_body};
+use crate::rack::{Rack, cross_button, section_body};
 use crate::settings::Settings;
 use crate::theme;
 use crate::setup::{self, Progress};
@@ -314,7 +314,7 @@ impl App {
                 self.setup = SetupState::Confirm;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("✕").on_hover_text("Hide until next launch").clicked() {
+                if cross_button(ui).on_hover_text("Hide until next launch").clicked() {
                     self.banner_dismissed = true;
                 }
             });
