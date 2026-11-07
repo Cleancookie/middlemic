@@ -6,7 +6,7 @@ use crate::playout::{Fill, Playout};
 use crate::settings::Settings;
 use anyhow::{Result, anyhow};
 use ringbuf::{
-    HeapRb,
+    HeapCons, HeapRb,
     traits::{Consumer, Producer, Split},
 };
 use std::collections::VecDeque;
@@ -104,6 +104,7 @@ impl Engine {
         let error = Arc::new(Mutex::new(None));
         let (cap_prod, cap_cons) = HeapRb::<f32>::new(FRAME * RING_FRAMES).split();
         let (out_prod, out_cons) = HeapRb::<f32>::new(FRAME * 2 * RING_FRAMES).split();
+        let (ref_prod, ref_cons) = HeapRb::<f32>::new(FRAME * RING_FRAMES).split();
 
         let mut engine = Self {
             running: running.clone(),
@@ -131,7 +132,17 @@ impl Engine {
         let (r, s) = (running.clone(), settings.clone());
         spawn("capture", Box::new(move || capture_loop(input, cap_prod, s, r)))?;
         let (r, s) = (running.clone(), settings.clone());
-        spawn("dsp", Box::new(move || dsp_loop(cap_cons, out_prod, s, r)))?;
+        spawn("dsp", Box::new(move || dsp_loop(cap_cons, ref_cons, out_prod, s, r)))?;
+        let (r, sink) = (running.clone(), output.clone());
+        spawn(
+            "reference",
+            Box::new(move || {
+                if let Err(err) = reference_loop(sink, ref_prod, r) {
+                    eprintln!("echo reference unavailable: {err:#}");
+                }
+                Ok(())
+            }),
+        )?;
         let r = running.clone();
         spawn(
             "render",
@@ -173,7 +184,40 @@ fn capture_loop(
     let enumerator = DeviceEnumerator::new()?;
     let device = find_device(&enumerator, Direction::Capture, needle.as_deref())?;
     eprintln!("input:  {}", device.get_friendlyname()?);
+    pump_capture(&device, &mut ring, &running, || settings.meters.record_dropout(), false)
+}
 
+/// What the speakers play, as the echo canceller's reference. Opening a playback device for
+/// capture is WASAPI loopback. Best effort: if it cannot run, the echo stage simply stays
+/// idle and the mic carries on, so this never stops the engine.
+fn reference_loop(
+    output: String,
+    mut ring: impl Producer<Item = f32>,
+    running: Arc<AtomicBool>,
+) -> Result<()> {
+    initialize_mta().ok()?;
+    let enumerator = DeviceEnumerator::new()?;
+    let device = enumerator.get_default_device(Direction::Render)?;
+    let name = device.get_friendlyname()?;
+    // Our own output must not be the reference: the canceller would erase the voice we send.
+    let sink = find_device(&enumerator, Direction::Render, Some(&output))?.get_friendlyname()?;
+    if name == sink {
+        eprintln!("echo reference: the default playback device ({name}) is the output; echo cancellation is idle. Set Windows playback to your headphones or speakers.");
+        return Ok(());
+    }
+    eprintln!("echo reference: {name}");
+    pump_capture(&device, &mut ring, &running, || {}, true)
+}
+
+/// Read `device` into `ring` as mono 48 kHz `f32` until `running` clears. A loopback gets no
+/// data while the speakers are silent, so there a quiet wait is normal, not an error.
+fn pump_capture(
+    device: &wasapi::Device,
+    ring: &mut impl Producer<Item = f32>,
+    running: &AtomicBool,
+    mut on_overflow: impl FnMut(),
+    loopback: bool,
+) -> Result<()> {
     let mut client = device.get_iaudioclient()?;
     let format = WaveFormat::new(32, 32, SampleType::Float, SAMPLE_RATE, 1, None);
     let (default_period, _) = client.get_device_period()?;
@@ -205,9 +249,13 @@ fn capture_loop(
             samples.push(f32::from_le_bytes(b));
         }
         if ring.push_slice(&samples) < samples.len() {
-            settings.meters.record_dropout(); // the processing thread fell behind; audio lost
+            on_overflow(); // the processing thread fell behind; audio lost
         }
-        event.wait_for_event(1000)?;
+        if loopback {
+            let _ = event.wait_for_event(100);
+        } else {
+            event.wait_for_event(1000)?;
+        }
     }
     client.stop_stream()?;
     Ok(())
@@ -215,6 +263,7 @@ fn capture_loop(
 
 fn dsp_loop(
     mut input: impl Consumer<Item = f32>,
+    reference: HeapCons<f32>,
     mut output: impl Producer<Item = f32>,
     settings: Arc<Settings>,
     running: Arc<AtomicBool>,
@@ -222,7 +271,7 @@ fn dsp_loop(
     lower_priority();
     // Built here, not on the caller's thread: some stages are not `Send`.
     let mut order_seen = settings.order.version();
-    let mut chain = dsp::build_chain(&settings)?;
+    let mut chain = dsp::build_chain(&settings, Some(reference))?;
     chain.prepare(SAMPLE_RATE as u32);
     let meters = &settings.meters;
     let peak = |x: &[f32]| x.iter().fold(0f32, |m, s| m.max(s.abs()));

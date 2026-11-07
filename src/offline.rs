@@ -129,7 +129,7 @@ mod tests {
     /// Runs `clip` through a chain in 10 ms frames, like the live engine. Returns the output
     /// and how long each frame took, in milliseconds.
     fn run(clip: &[f32], settings: &crate::settings::Settings) -> (Vec<f32>, Vec<f32>) {
-        let mut chain = crate::dsp::build_chain(settings).unwrap();
+        let mut chain = crate::dsp::build_chain(settings, None).unwrap();
         chain.prepare(48_000);
         let mut out = clip[..clip.len() / 480 * 480].to_vec();
         let mut times = Vec::with_capacity(out.len() / 480);

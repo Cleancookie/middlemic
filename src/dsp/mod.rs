@@ -5,12 +5,14 @@ mod biquad;
 mod compressor;
 mod deepfilter;
 mod deesser;
+mod echo;
 mod eq;
 mod gain;
 mod limiter;
 mod multiband;
 
 pub use deepfilter::DeepFilter;
+pub use echo::EchoCancel;
 #[allow(unused_imports)] // Used by the Windows-only window.
 pub use deesser::{DeEsser, NAME as DEESSER_NAME, frequency_hz as deesser_frequency_hz};
 pub use eq::{BANDS, Eq, NAME as EQ_NAME, response_db};
@@ -20,10 +22,12 @@ pub use multiband::Multiband;
 
 use crate::settings::{Section, Settings};
 use anyhow::Result;
+use ringbuf::HeapCons;
 
 /// Every stage's controls, in signal order.
 pub fn default_sections() -> Vec<Section> {
     vec![
+        echo::section(),
         deepfilter::section(),
         gain::section(),
         eq::section(),
@@ -35,12 +39,15 @@ pub fn default_sections() -> Vec<Section> {
 
 /// Build one stage for each of the settings' sections, then run them in the saved order.
 /// A stage's index in the chain is its section's index, which is what `Settings::order` uses.
-/// Call on the thread that will run it (see [`Processor`]).
-pub fn build_chain(settings: &Settings) -> Result<Chain> {
+/// `reference` is the audio going to the speakers, for echo cancellation; with `None` that
+/// stage never runs. Call on the thread that will run it (see [`Processor`]).
+pub fn build_chain(settings: &Settings, reference: Option<HeapCons<f32>>) -> Result<Chain> {
     let mut chain = Chain::new();
+    let mut reference = reference;
     for section in &settings.sections {
         let section = section.clone();
         match section.name {
+            echo::NAME => chain.push(EchoCancel::new(section, reference.take())),
             deepfilter::NAME => chain.push(DeepFilter::new(section)?),
             gain::NAME => chain.push(Gain::new(section)),
             eq::NAME => chain.push(Eq::new(section)),
@@ -221,23 +228,24 @@ mod tests {
     #[test]
     fn the_built_chain_starts_in_the_saved_order() {
         let settings = Settings::new(default_sections());
-        settings.order.set(&[5, 4, 3, 2, 1, 0]);
-        let chain = build_chain(&settings).unwrap();
-        assert_eq!(chain.order, vec![5, 4, 3, 2, 1, 0]);
+        let reversed: Vec<usize> = (0..settings.sections.len()).rev().collect();
+        settings.order.set(&reversed);
+        let chain = build_chain(&settings, None).unwrap();
+        assert_eq!(chain.order, reversed);
     }
 
     #[test]
     fn every_default_section_has_a_stage_and_unknown_ones_are_an_error() {
-        assert!(build_chain(&Settings::new(default_sections())).is_ok());
+        assert!(build_chain(&Settings::new(default_sections()), None).is_ok());
         let odd = Settings::new(vec![crate::settings::Section::new("Mystery", vec![])]);
-        let message = build_chain(&odd).err().expect("unknown section").to_string();
+        let message = build_chain(&odd, None).err().expect("unknown section").to_string();
         assert!(message.contains("Mystery"), "{message}");
     }
 
     #[test]
     fn full_chain_builds_and_passes_a_voice_band_tone() {
         let settings = Settings::new(default_sections());
-        let mut chain = build_chain(&settings).expect("chain builds");
+        let mut chain = build_chain(&settings, None).expect("chain builds");
         chain.prepare(48_000);
         let mut tone = testutil::sine(500.0, 48_000, 0.05);
         chain.process(&mut tone);
@@ -247,7 +255,7 @@ mod tests {
     #[test]
     fn full_chain_cost_is_a_small_fraction_of_real_time() {
         let settings = Settings::new(default_sections());
-        let mut chain = build_chain(&settings).expect("chain builds");
+        let mut chain = build_chain(&settings, None).expect("chain builds");
         chain.prepare(48_000);
         let mut audio = testutil::sine(300.0, 48_000 * 5, 0.2);
         let started = std::time::Instant::now();

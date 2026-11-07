@@ -18,7 +18,12 @@ Early. Working today:
 
 - Capture from any recording device, process, play to any playback device (WASAPI, shared mode)
 - Pluggable chain: every stage implements `Processor`, so stages can be swapped, reordered or stacked
-- Stages, in order: DeepFilterNet3 noise removal, mic boost, EQ, de-esser, 3-band compressor, limiter
+- Stages, in order: echo cancellation (off by default), DeepFilterNet3 noise removal, mic boost,
+  EQ, de-esser, 3-band compressor, limiter
+- Echo cancellation (WebRTC AEC3, pure Rust) works without noise removal. It listens to what
+  your speakers play through WASAPI loopback of the default playback device, so set Windows
+  playback to your speakers or headphones, not to the virtual cable. If that is the output
+  device, the stage stays idle rather than erase your own voice
 - Simple window: device pickers, start/stop, level meters, and the stages as a rack of rows
   (fold arrow, bypass switch, reset, live gain-reduction readout); fold state is remembered.
   Drag a row's grip to reorder the chain while it runs; the order is saved too

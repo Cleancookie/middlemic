@@ -94,6 +94,7 @@ impl Param {
 pub struct Section {
     pub name: &'static str,
     pub enabled: AtomicBool,
+    default_enabled: bool,
     pub params: Vec<Param>,
     /// One label per gain-reduction meter this stage reports (empty for most stages).
     pub reduction_labels: Vec<&'static str>,
@@ -113,6 +114,7 @@ impl Section {
         Self {
             name,
             enabled: AtomicBool::new(true),
+            default_enabled: true,
             params,
             reduction_labels: Vec::new(),
             reduction: Vec::new(),
@@ -121,6 +123,13 @@ impl Section {
             advanced: AtomicBool::new(false),
             open: AtomicBool::new(false),
         }
+    }
+
+    /// Start switched off, and return to off on reset.
+    pub fn off_by_default(mut self) -> Self {
+        self.default_enabled = false;
+        self.enabled.store(false, Relaxed);
+        self
     }
 
     /// Start unfolded in the rack (stages are folded by default).
@@ -166,7 +175,7 @@ impl Section {
     }
 
     pub fn reset(&self) {
-        self.enabled.store(true, Relaxed);
+        self.enabled.store(self.default_enabled, Relaxed);
         self.advanced.store(false, Relaxed);
         self.params.iter().chain(&self.simple).for_each(Param::reset);
     }
@@ -347,8 +356,9 @@ impl Settings {
         names.join(",")
     }
 
-    /// Apply a saved order. Unknown names are skipped and stages missing from the list keep
-    /// their usual place at the end, so a settings file from another version still works.
+    /// Apply a saved order. Unknown names are skipped and stages missing from the list go back
+    /// to their usual position, so a settings file from another version still works and a
+    /// stage added later (echo cancellation, which must come first) is not exiled to the end.
     fn set_order_by_names(&self, names: &str) {
         let mut order: Vec<usize> = Vec::new();
         for name in names.split(',').map(str::trim) {
@@ -358,8 +368,11 @@ impl Settings {
                 }
             }
         }
-        let missing: Vec<usize> = (0..self.sections.len()).filter(|i| !order.contains(i)).collect();
-        order.extend(missing);
+        for i in 0..self.sections.len() {
+            if !order.contains(&i) {
+                order.insert(i.min(order.len()), i);
+            }
+        }
         self.order.set(&order);
     }
 
@@ -591,7 +604,7 @@ mod tests {
         // A file from another version: one stage unknown, one missing, one repeated.
         let c = four_stages();
         c.apply_text("order=D,Gone,D,B\n");
-        assert_eq!(c.order.get(), vec![3, 1, 0, 2], "unknown dropped, missing appended in usual order");
+        assert_eq!(c.order.get(), vec![0, 3, 2, 1], "unknown dropped, missing back at their usual positions");
     }
 
     #[test]

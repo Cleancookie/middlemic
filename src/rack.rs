@@ -483,7 +483,7 @@ mod tests {
         let names: Vec<_> = settings.sections.iter().map(|s| s.name).collect();
         assert_eq!(
             names,
-            ["Noise removal", "Mic boost", "EQ", "De-esser", "Compressor", "Limiter"]
+            ["Echo cancellation", "Noise removal", "Mic boost", "EQ", "De-esser", "Compressor", "Limiter"]
         );
         let ctx = egui::Context::default();
         let drawn = std::cell::Cell::new(0);
