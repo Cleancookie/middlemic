@@ -24,6 +24,11 @@ pub fn section() -> Section {
     .with_reduction_meters(&["Sibilance"])
 }
 
+/// Where the sibilance band starts, for drawing it on the spectrogram.
+pub fn frequency_hz(section: &Section) -> f32 {
+    section.get(FREQ)
+}
+
 /// Split-band: only the sibilance band above `Frequency` is turned down.
 pub struct DeEsser {
     section: Arc<Section>,

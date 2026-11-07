@@ -11,8 +11,9 @@ mod limiter;
 mod multiband;
 
 pub use deepfilter::DeepFilter;
-pub use deesser::DeEsser;
-pub use eq::Eq;
+#[allow(unused_imports)] // Used by the Windows-only window.
+pub use deesser::{DeEsser, NAME as DEESSER_NAME, frequency_hz as deesser_frequency_hz};
+pub use eq::{BANDS, Eq, NAME as EQ_NAME, response_db};
 pub use gain::Gain;
 pub use limiter::Limiter;
 pub use multiband::Multiband;

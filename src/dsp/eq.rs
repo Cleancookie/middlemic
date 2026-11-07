@@ -17,6 +17,43 @@ const HIGH_HZ: usize = 7;
 const HIGH_DB: usize = 8;
 const COUNT: usize = 9;
 
+/// One band as the UI lays it out: which parameters it owns.
+pub struct BandDef {
+    pub label: &'static str,
+    pub freq: usize,
+    /// `None` for the high-pass, which has no gain.
+    pub gain: Option<usize>,
+}
+
+pub const BANDS: [BandDef; 5] = [
+    BandDef { label: "High-pass", freq: HPF, gain: None },
+    BandDef { label: "Low shelf", freq: LOW_HZ, gain: Some(LOW_DB) },
+    BandDef { label: "Low-mid", freq: LOW_MID_HZ, gain: Some(LOW_MID_DB) },
+    BandDef { label: "High-mid", freq: HIGH_MID_HZ, gain: Some(HIGH_MID_DB) },
+    BandDef { label: "High shelf", freq: HIGH_HZ, gain: Some(HIGH_DB) },
+];
+
+/// The five filters for these parameter values, in signal order.
+fn filters(p: &[f32; COUNT], fs: f32) -> [Coeffs; 5] {
+    [
+        Coeffs::highpass(fs, p[HPF], FRAC_1_SQRT_2),
+        Coeffs::low_shelf(fs, p[LOW_HZ], p[LOW_DB]),
+        Coeffs::peaking(fs, p[LOW_MID_HZ], 1.0, p[LOW_MID_DB]),
+        Coeffs::peaking(fs, p[HIGH_MID_HZ], 1.0, p[HIGH_MID_DB]),
+        Coeffs::high_shelf(fs, p[HIGH_HZ], p[HIGH_DB]),
+    ]
+}
+
+/// Combined EQ gain in dB at each of `freqs`, for the curve on screen.
+pub fn response_db(section: &Section, fs: f32, freqs: &[f32]) -> Vec<f32> {
+    let params: [f32; COUNT] = std::array::from_fn(|i| section.get(i));
+    let filters = filters(&params, fs);
+    freqs
+        .iter()
+        .map(|&f| filters.iter().map(|c| c.magnitude_db(fs, f)).sum())
+        .collect()
+}
+
 pub fn section() -> Section {
     let gain = |name| Param::new(name, "dB", -12.0, 12.0, 0.0);
     Section::new(
@@ -67,14 +104,12 @@ impl Eq {
             return;
         }
         self.last = now;
-        let fs = self.fs;
-        self.hp.set(Coeffs::highpass(fs, now[HPF], FRAC_1_SQRT_2));
-        self.low.set(Coeffs::low_shelf(fs, now[LOW_HZ], now[LOW_DB]));
-        self.low_mid
-            .set(Coeffs::peaking(fs, now[LOW_MID_HZ], 1.0, now[LOW_MID_DB]));
-        self.high_mid
-            .set(Coeffs::peaking(fs, now[HIGH_MID_HZ], 1.0, now[HIGH_MID_DB]));
-        self.high.set(Coeffs::high_shelf(fs, now[HIGH_HZ], now[HIGH_DB]));
+        let [hp, low, low_mid, high_mid, high] = filters(&now, self.fs);
+        self.hp.set(hp);
+        self.low.set(low);
+        self.low_mid.set(low_mid);
+        self.high_mid.set(high_mid);
+        self.high.set(high);
     }
 }
 
@@ -117,6 +152,35 @@ mod tests {
         eq.process(&mut rumble);
         assert!((rms(&voice[24_000..]) / (0.5 / 2f32.sqrt()) - 1.0).abs() < 0.03);
         assert!(rms(&rumble[24_000..]) < 0.1 * (0.5 / 2f32.sqrt()));
+    }
+
+    #[test]
+    fn drawn_curve_matches_the_real_audio() {
+        let s = Arc::new(section());
+        s.params[LOW_DB].set(5.0);
+        s.params[HIGH_MID_DB].set(-7.0);
+        s.params[HIGH_DB].set(4.0);
+        let freqs = [60.0, 250.0, 1_000.0, 3_000.0, 9_000.0];
+        let drawn = response_db(&s, 48_000.0, &freqs);
+        for (&f, &predicted) in freqs.iter().zip(&drawn) {
+            let mut eq = Eq::new(s.clone());
+            eq.prepare(48_000);
+            let mut tone = sine(f, 48_000, 0.05);
+            eq.process(&mut tone);
+            let measured = 20.0 * (rms(&tone[24_000..]) / (0.05 / 2f32.sqrt())).log10();
+            assert!((measured - predicted).abs() < 0.3, "{f} Hz: heard {measured}, drew {predicted}");
+        }
+    }
+
+    #[test]
+    fn every_band_points_at_real_parameters() {
+        let s = section();
+        for band in &BANDS {
+            assert!(s.params[band.freq].unit == "Hz", "{}", band.label);
+            if let Some(g) = band.gain {
+                assert!(s.params[g].unit == "dB", "{}", band.label);
+            }
+        }
     }
 
     #[test]

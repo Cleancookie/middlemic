@@ -1,6 +1,8 @@
 //! Simple egui front end: pick devices, start/stop, adjust each stage.
 
 use crate::audio::{self, Devices, Engine};
+use crate::dsp;
+use crate::eq_panel::EqPanel;
 use crate::settings::{Param, Section, Settings};
 use crate::setup::{self, Progress};
 use eframe::egui;
@@ -18,8 +20,8 @@ pub fn run(settings: Arc<Settings>) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("middlemic")
-            .with_inner_size([460.0, 680.0])
-            .with_min_inner_size([380.0, 360.0]),
+            .with_inner_size([780.0, 860.0])
+            .with_min_inner_size([600.0, 420.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -39,6 +41,7 @@ enum SetupState {
 
 struct App {
     setup: SetupState,
+    eq_panel: EqPanel,
     settings: Arc<Settings>,
     devices: Devices,
     input: String,
@@ -76,6 +79,7 @@ impl App {
 
         let mut app = Self {
             setup: SetupState::Closed,
+            eq_panel: EqPanel::default(),
             settings,
             devices,
             input,
@@ -412,8 +416,16 @@ impl eframe::App for App {
             ui.separator();
             self.meters(ui);
             ui.separator();
+            let running = self.running();
+            self.eq_panel.update(&self.settings.meters, running);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                for (i, section) in self.settings.sections.iter().enumerate() {
+                let eq = self.settings.section(dsp::EQ_NAME);
+                let deesser = self.settings.section(dsp::DEESSER_NAME);
+                self.eq_panel.ui(ui, &eq, dsp::deesser_frequency_hz(&deesser));
+                ui.separator();
+                // The EQ has its own panel above; everything else is a plain list.
+                let others = self.settings.sections.iter().filter(|s| s.name != dsp::EQ_NAME);
+                for (i, section) in others.enumerate() {
                     section_ui(ui, section, i < 2);
                 }
             });

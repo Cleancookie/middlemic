@@ -230,6 +230,7 @@ fn dsp_loop(
         if input.occupied_len() >= FRAME && output.vacant_len() >= FRAME * 2 {
             input.pop_slice(&mut mono);
             meters.record_input(peak(&mono));
+            meters.input_scope.write(&mono);
             let started = Instant::now();
             chain.process(&mut mono);
             // Fraction of the 10 ms frame budget, lightly smoothed for the UI.
@@ -237,6 +238,7 @@ fn dsp_loop(
             meters.set_load(load);
             meters.set_latency_ms(chain.latency_samples() as f32 * 1000.0 / SAMPLE_RATE as f32);
             meters.record_output(peak(&mono));
+            meters.output_scope.write(&mono);
             for (frame, s) in stereo.chunks_exact_mut(2).zip(mono) {
                 frame[0] = s;
                 frame[1] = s;

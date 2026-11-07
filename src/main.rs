@@ -3,8 +3,11 @@
 #[cfg(windows)]
 mod audio;
 mod dsp;
+mod eq_panel;
+mod knob;
 mod settings;
 mod setup;
+mod spectrum;
 #[cfg(windows)]
 mod ui;
 

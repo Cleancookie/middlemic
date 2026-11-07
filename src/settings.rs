@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering::Relaxed};
 
 /// `%APPDATA%\middlemic\settings.ini`, or the current directory if APPDATA is unset.
 pub fn settings_path() -> PathBuf {
@@ -53,6 +53,37 @@ impl Param {
 
     pub fn reset(&self) {
         self.set(self.default);
+    }
+
+    /// Position of `value` along the control, `0..=1` (logarithmic for frequencies).
+    pub fn to_norm(&self, value: f32) -> f32 {
+        let n = if self.log {
+            (value.max(self.min).ln() - self.min.ln()) / (self.max.ln() - self.min.ln())
+        } else {
+            (value - self.min) / (self.max - self.min)
+        };
+        n.clamp(0.0, 1.0)
+    }
+
+    pub fn from_norm(&self, n: f32) -> f32 {
+        let n = n.clamp(0.0, 1.0);
+        if self.log {
+            (self.min.ln() + n * (self.max.ln() - self.min.ln())).exp()
+        } else {
+            self.min + n * (self.max - self.min)
+        }
+    }
+
+    /// Short text for a knob: "1.20 kHz", "+3.0 dB", "50 %".
+    pub fn display(&self) -> String {
+        let v = self.get();
+        match self.unit {
+            "Hz" if v >= 1000.0 => format!("{:.2} kHz", v / 1000.0),
+            "Hz" => format!("{v:.0} Hz"),
+            "dB" if self.min < 0.0 => format!("{v:+.1} dB"),
+            "" => format!("{v:.1}"),
+            unit => format!("{v:.1} {unit}"),
+        }
     }
 }
 
@@ -129,6 +160,44 @@ impl Section {
     }
 }
 
+/// The most recent audio, for the spectrum display. The DSP thread writes, the UI reads
+/// without locking. A read that overlaps a write may mix old and new samples, which is
+/// harmless for drawing.
+pub struct Scope {
+    samples: Vec<AtomicU32>,
+    written: AtomicUsize,
+}
+
+impl Default for Scope {
+    fn default() -> Self {
+        Self {
+            samples: (0..Self::LEN).map(|_| AtomicU32::new(0)).collect(),
+            written: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl Scope {
+    pub const LEN: usize = 4096;
+
+    pub fn write(&self, chunk: &[f32]) {
+        let mut at = self.written.load(Relaxed);
+        for s in chunk {
+            self.samples[at % Self::LEN].store(s.to_bits(), Relaxed);
+            at += 1;
+        }
+        self.written.store(at, Relaxed);
+    }
+
+    /// Fills `out` with the latest samples, oldest first. `out.len()` must be `<= LEN`.
+    pub fn read_latest(&self, out: &mut [f32]) {
+        let start = self.written.load(Relaxed) + Self::LEN - out.len();
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = f32::from_bits(self.samples[(start + i) % Self::LEN].load(Relaxed));
+        }
+    }
+}
+
 /// Levels written by the DSP thread, read by the UI. Peaks are linear, `>= 0`, so the
 /// raw `f32` bits order the same as the values and `fetch_max` works.
 #[derive(Default)]
@@ -137,6 +206,8 @@ pub struct Meters {
     output_peak: AtomicU32,
     load: AtomicU32,
     latency_ms: AtomicU32,
+    pub input_scope: Scope,
+    pub output_scope: Scope,
 }
 
 impl Meters {
@@ -319,6 +390,45 @@ mod tests {
         b.reset();
         assert!(!b.section("C").is_advanced());
         assert_eq!(b.section("C").simple[0].get(), 50.0);
+    }
+
+    #[test]
+    fn norm_round_trips_for_linear_and_log() {
+        let lin = Param::new("g", "dB", -12.0, 12.0, 0.0);
+        let log = Param::new("f", "Hz", 20.0, 20_000.0, 1_000.0).log();
+        assert!((lin.to_norm(0.0) - 0.5).abs() < 1e-6);
+        assert!((log.to_norm(632.455) - 0.5).abs() < 1e-3, "log midpoint is the geometric mean");
+        for n in [0.0, 0.2, 0.5, 0.9, 1.0] {
+            assert!((lin.to_norm(lin.from_norm(n)) - n).abs() < 1e-5);
+            assert!((log.to_norm(log.from_norm(n)) - n).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn display_reads_naturally() {
+        let f = Param::new("f", "Hz", 20.0, 20_000.0, 80.0);
+        assert_eq!(f.display(), "80 Hz");
+        f.set(1_250.0);
+        assert_eq!(f.display(), "1.25 kHz");
+        let g = Param::new("g", "dB", -12.0, 12.0, 3.0);
+        assert_eq!(g.display(), "+3.0 dB");
+        assert_eq!(Param::new("a", "%", 0.0, 100.0, 50.0).display(), "50.0 %");
+    }
+
+    #[test]
+    fn scope_returns_the_latest_samples_in_order_across_wraparound() {
+        let s = Scope::default();
+        s.write(&(0..10).map(|i| i as f32).collect::<Vec<_>>());
+        let mut out = [0.0; 4];
+        s.read_latest(&mut out);
+        assert_eq!(out, [6.0, 7.0, 8.0, 9.0]);
+
+        let long: Vec<f32> = (0..Scope::LEN + 100).map(|i| i as f32).collect();
+        s.write(&long);
+        let mut out = [0.0; 3];
+        s.read_latest(&mut out);
+        let last = (Scope::LEN + 99) as f32;
+        assert_eq!(out, [last - 2.0, last - 1.0, last]);
     }
 
     #[test]

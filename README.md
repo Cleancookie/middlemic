@@ -20,6 +20,10 @@ Early. Working today:
 - Pluggable chain: every stage implements `Processor`, so stages can be swapped, reordered or stacked
 - Stages, in order: DeepFilterNet3 noise removal, mic boost, EQ, de-esser, 3-band compressor, limiter
 - Simple window: device pickers, start/stop, level meters, per-stage on/off and sliders
+- EQ screen in the style of a plugin EQ: response curve over a live spectrum, draggable band
+  dots, a row of knobs per band, and a scrolling spectrogram with the de-esser frequency marked
+- Gain-reduction meters on the de-esser and compressor; the compressor has a Simple mode
+  (one Amount slider plus Gentle, Voice and Strong) and an Advanced mode with every dial
 - Settings and device choices are saved to `%APPDATA%\middlemic\settings.ini`
 - Whole chain costs about 4% of one core in testing (DeepFilterNet about 1.6% of that),
   and the DSP thread runs at below-normal priority

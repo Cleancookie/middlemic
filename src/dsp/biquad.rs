@@ -102,6 +102,20 @@ impl Coeffs {
     }
 }
 
+impl Coeffs {
+    /// Gain in dB at `freq`, for drawing the EQ curve.
+    pub fn magnitude_db(&self, fs: f32, freq: f32) -> f32 {
+        let w = 2.0 * PI * freq as f64 / fs as f64;
+        let (c1, s1, c2, s2) = (w.cos(), w.sin(), (2.0 * w).cos(), (2.0 * w).sin());
+        let num_re = self.b0 + self.b1 * c1 + self.b2 * c2;
+        let num_im = -(self.b1 * s1 + self.b2 * s2);
+        let den_re = 1.0 + self.a1 * c1 + self.a2 * c2;
+        let den_im = -(self.a1 * s1 + self.a2 * s2);
+        let power = (num_re * num_re + num_im * num_im) / (den_re * den_re + den_im * den_im);
+        (10.0 * power.log10()) as f32
+    }
+}
+
 /// Transposed direct form II.
 pub struct Biquad {
     c: Coeffs,
@@ -197,6 +211,25 @@ mod tests {
         let c = Coeffs::peaking(FS, 1_000.0, 1.0, 6.0);
         let db = 20.0 * through(c, 1_000.0).log10();
         assert!((db - 6.0).abs() < 0.2, "got {db} dB");
+    }
+
+    #[test]
+    fn magnitude_matches_what_the_filter_really_does() {
+        let cases = [
+            Coeffs::peaking(FS, 1_000.0, 1.0, 6.0),
+            Coeffs::highpass(FS, 100.0, 0.707),
+            Coeffs::low_shelf(FS, 200.0, -5.0),
+            Coeffs::high_shelf(FS, 6_000.0, 4.0),
+        ];
+        for c in cases {
+            for freq in [50.0, 300.0, 1_000.0, 8_000.0] {
+                let measured = 20.0 * through(c, freq).log10();
+                let predicted = c.magnitude_db(FS, freq);
+                assert!((measured - predicted).abs() < 0.15, "{freq} Hz: {measured} vs {predicted}");
+            }
+        }
+        let hp = Coeffs::highpass(FS, 100.0, 0.707);
+        assert!((hp.magnitude_db(FS, 100.0) + 3.0).abs() < 0.1, "-3 dB at the corner");
     }
 
     #[test]
