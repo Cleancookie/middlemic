@@ -5,7 +5,15 @@ use std::sync::Arc;
 pub const NAME: &str = "Mic boost";
 
 pub fn section() -> Section {
-    Section::new(NAME, vec![Param::new("Boost", "dB", 0.0, 30.0, 0.0)]).unfolded()
+    Section::new(
+        NAME,
+        vec![Param::new("Boost", "dB", 0.0, 30.0, 0.0).help(
+            "How much louder to make your mic, in dB (decibels: +6 dB is about twice the signal, +10 dB sounds about twice as loud). \
+             Start at 0 and raise it only if friends say you are quiet. Noise rises too, so set your Windows mic level first.",
+        )],
+    )
+    .help("Turns your mic up before the stages below it. Smoothed, so dragging it does not click. Use it if your voice is too quiet.")
+    .unfolded()
 }
 
 /// Smoothed gain, so dragging the slider does not click.

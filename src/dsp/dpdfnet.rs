@@ -58,7 +58,14 @@ pub fn model_installed(variant: &Variant) -> bool {
 pub fn section(variant: Variant) -> Section {
     Section::new(
         variant.name,
-        vec![Param::new("Max reduction", "dB", 0.0, 100.0, DEFAULT_MAX_REDUCTION_DB)],
+        vec![Param::new("Max reduction", "dB", 0.0, 100.0, DEFAULT_MAX_REDUCTION_DB).help(
+            "The most noise this can turn down, in dB (decibels: about 6 dB is half the loudness). \
+             Start at 18. Raise it for a noisy room; lower it if soft word endings sound chopped. 100 means no limit.",
+        )],
+    )
+    .help(
+        "An alternative AI noise remover (DPDFNet) to try side by side with the standard one. \
+         Needs a one-time model download, adds about 50 ms of delay and uses about 40% of a CPU core. Off by default.",
     )
     .off_by_default()
 }

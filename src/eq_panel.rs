@@ -279,7 +279,7 @@ impl EqPanel {
                 None => freq.display(),
             };
             let hint = format!("Now {now}. Drag to move, double-click resets");
-            theme::help_tooltip_with_hint(response, band.label, freq.help, &hint);
+            theme::help_tooltip_with_hint(response, band.label, gain.map_or(freq.help, |g| g.help), &hint);
         }
     }
 

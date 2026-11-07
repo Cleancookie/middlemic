@@ -24,7 +24,13 @@ const MAX_BACKLOG_FRAMES: usize = 4;
 /// No dials: the canceller tunes itself and finds the speaker-to-mic delay on its own.
 /// Off by default because it needs the playback loopback to be running.
 pub fn section() -> Section {
-    Section::new(NAME, Vec::new()).off_by_default()
+    Section::new(NAME, Vec::new())
+        .off_by_default()
+        .help(
+            "Removes what your speakers play from your mic, so people on the call stop hearing themselves or the game. \
+             It uses the speakers' loopback (a copy of what they play) as its reference and tunes itself. \
+             Only needed with speakers, not a headset. Keep it first in the rack.",
+        )
 }
 
 /// Removes what the speakers play from the microphone signal (WebRTC AEC3), so people on the

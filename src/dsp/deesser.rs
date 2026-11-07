@@ -16,10 +16,23 @@ pub fn section() -> Section {
     Section::new(
         NAME,
         vec![
-            Param::new("Frequency", "Hz", 3000.0, 10000.0, 6500.0).log(),
-            Param::new("Threshold", "dB", -60.0, 0.0, -30.0),
-            Param::new("Max reduction", "dB", 0.0, 20.0, 8.0),
+            Param::new("Frequency", "Hz", 3000.0, 10000.0, 6500.0).log().help(
+                "Where the harsh \"s\" range starts, in Hz (pitch: higher is shriller). Only sound above this is turned down. \
+                 Start at 6500 Hz. Lower it toward 5000 if the sharpness sits lower in your voice.",
+            ),
+            Param::new("Threshold", "dB", -60.0, 0.0, -30.0).help(
+                "How loud the \"s\" sounds must get, in dB (0 is the loudest possible), before they are turned down. \
+                 Start at -30. Lower it to catch more; raise it if your voice starts to sound lispy.",
+            ),
+            Param::new("Max reduction", "dB", 0.0, 20.0, 8.0).help(
+                "The most the harsh range can be turned down, in dB. Start at 8. \
+                 Raise it if \"s\" sounds still sting; too much makes you lisp.",
+            ),
         ],
+    )
+    .help(
+        "Softens sharp \"s\" and \"sh\" sounds (sibilance) without touching the rest of your voice. \
+         Handy on bright headset mics. Only the range above Frequency is turned down.",
     )
     .with_reduction_meters(&["Sibilance"])
 }

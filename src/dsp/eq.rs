@@ -55,20 +55,55 @@ pub fn response_db(section: &Section, fs: f32, freqs: &[f32]) -> Vec<f32> {
 }
 
 pub fn section() -> Section {
-    let gain = |name| Param::new(name, "dB", -12.0, 12.0, 0.0);
+    let gain = |name, help| Param::new(name, "dB", -12.0, 12.0, 0.0).help(help);
     Section::new(
         NAME,
         vec![
-            Param::new("High-pass", "Hz", 20.0, 400.0, 80.0).log(),
-            Param::new("Low shelf freq", "Hz", 60.0, 400.0, 120.0).log(),
-            gain("Low shelf gain"),
-            Param::new("Low-mid freq", "Hz", 150.0, 1500.0, 400.0).log(),
-            gain("Low-mid gain"),
-            Param::new("High-mid freq", "Hz", 1000.0, 8000.0, 3000.0).log(),
-            gain("High-mid gain"),
-            Param::new("High shelf freq", "Hz", 4000.0, 12000.0, 8000.0).log(),
-            gain("High shelf gain"),
+            Param::new("High-pass", "Hz", 20.0, 400.0, 80.0).log().help(
+                "Cuts everything below this pitch (Hz: low numbers are bass), removing desk thumps, rumble and breath pops. \
+                 Start at 80 Hz. Raise it toward 150 if you still sound boomy; too high makes your voice thin.",
+            ),
+            Param::new("Low shelf freq", "Hz", 60.0, 400.0, 120.0).log().help(
+                "Where the bass control starts, in Hz. Everything below this is turned up or down by Low shelf gain. \
+                 Start at 120 Hz.",
+            ),
+            gain(
+                "Low shelf gain",
+                "Turns the bass up or down, in dB (decibels, a loudness unit). Start at 0. \
+                 Cut 2 to 3 dB if a close mic sounds boomy; boost a little for warmth.",
+            ),
+            Param::new("Low-mid freq", "Hz", 150.0, 1500.0, 400.0).log().help(
+                "The centre pitch, in Hz, of the low-mid control: the body of your voice. \
+                 Start at 400 Hz, where boxy or muddy sound usually lives.",
+            ),
+            gain(
+                "Low-mid gain",
+                "Turns the body of your voice up or down, in dB. Start at 0. \
+                 Cut 2 to 3 dB if you sound boxy or muddy; a small boost makes a thin voice fuller.",
+            ),
+            Param::new("High-mid freq", "Hz", 1000.0, 8000.0, 3000.0).log().help(
+                "The centre pitch, in Hz, of the presence control: where words get their clarity. \
+                 Start at 3000 Hz.",
+            ),
+            gain(
+                "High-mid gain",
+                "Turns clarity up or down, in dB. Start at 0. \
+                 Boost 1 to 3 dB if words sound dull or buried; cut if your voice sounds harsh or sharp.",
+            ),
+            Param::new("High shelf freq", "Hz", 4000.0, 12000.0, 8000.0).log().help(
+                "Where the treble control starts, in Hz. Everything above this is turned up or down by High shelf gain. \
+                 Start at 8000 Hz.",
+            ),
+            gain(
+                "High shelf gain",
+                "Turns the treble up or down, in dB. Start at 0. \
+                 A small boost adds air; a cut softens a harsh or hissy headset mic.",
+            ),
         ],
+    )
+    .help(
+        "Reshapes the tone of your voice: cut rumble, tame boominess, add clarity. \
+         Five bands: a high-pass filter, two shelves and two bells. Drag the numbered dots on the graph or turn the knobs.",
     )
     .unfolded()
 }

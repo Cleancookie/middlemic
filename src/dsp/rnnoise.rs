@@ -17,7 +17,14 @@ const DEFAULT_MAX_REDUCTION_DB: f32 = 18.0;
 pub fn section() -> Section {
     Section::new(
         NAME,
-        vec![Param::new("Max reduction", "dB", 0.0, 100.0, DEFAULT_MAX_REDUCTION_DB)],
+        vec![Param::new("Max reduction", "dB", 0.0, 100.0, DEFAULT_MAX_REDUCTION_DB).help(
+            "The most noise this can turn down, in dB (decibels: about 6 dB is half the loudness). \
+             Start at 18. Raise it for a noisy room; lower it if your voice sounds warbly or chopped. 100 means no limit.",
+        )],
+    )
+    .help(
+        "A very light, older noise remover (RNNoise) that costs almost no CPU. It removes less than the AI options and can \
+         warble on speech. Adds about 10 ms of delay. Try it on a slow PC. Off by default.",
     )
     .off_by_default()
 }

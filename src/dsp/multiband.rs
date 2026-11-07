@@ -55,38 +55,92 @@ pub fn param(strip: usize, field: usize) -> usize {
 }
 
 macro_rules! strip {
-    ($name:literal, $threshold:expr, $ratio:expr) => {
+    ($name:tt, $threshold:expr, $ratio:expr) => {
         [
-            Param::new(concat!($name, " input"), "dB", -24.0, 24.0, 0.0),
-            Param::new(concat!($name, " output"), "dB", -24.0, 24.0, 0.0),
-            Param::new(concat!($name, " threshold"), "dB", -60.0, 0.0, $threshold),
-            Param::new(concat!($name, " ratio"), ":1", 1.0, 20.0, $ratio).log(),
-            Param::new(concat!($name, " knee"), "dB", 0.0, 24.0, 0.0),
-            Param::new(concat!($name, " attack"), "ms", 0.0, 100.0, 10.0),
-            Param::new(concat!($name, " hold"), "ms", 0.0, 500.0, 0.0),
-            Param::new(concat!($name, " release"), "ms", 10.0, 1000.0, 120.0).log(),
-            Param::new(concat!($name, " RMS"), "", 0.0, 1.0, 0.0),
-            Param::new(concat!($name, " floor"), "dB", -90.0, 0.0, -60.0),
-            Param::new(concat!($name, " floor ratio"), "1:", 1.0, 4.0, 1.0),
+            Param::new(concat!($name, " input"), "dB", -24.0, 24.0, 0.0).help(
+                "Volume change applied before compressing, in dB (decibels, a loudness unit). Start at 0. \
+                 Raising it pushes more sound over the threshold, so it is compressed harder; lowering it eases off.",
+            ),
+            Param::new(concat!($name, " output"), "dB", -24.0, 24.0, 0.0).help(
+                "Volume change applied after compressing, in dB. Start at 0. \
+                 Raise it 1 to 4 dB if the voice sounds quieter after compression, to make up what was turned down.",
+            ),
+            Param::new(concat!($name, " threshold"), "dB", -60.0, 0.0, $threshold).help(concat!(
+                "The level above which sound is turned down, in dB (0 is the loudest possible). Lower means more gets compressed. \
+                 Start near the default and watch the reduction meter: 3 to 6 dB on normal speech is plenty. ",
+                role!($name)
+            )),
+            Param::new(concat!($name, " ratio"), ":1", 1.0, 20.0, $ratio).log().help(
+                "How hard sound above the threshold is squashed. At 2:1, every 2 dB over the threshold becomes 1 dB. \
+                 Start around 2:1 to 3:1. Higher sounds heavier and can flatten your voice; 1:1 is off.",
+            ),
+            Param::new(concat!($name, " knee"), "dB", 0.0, 24.0, 0.0).help(
+                "How gradually compression starts around the threshold, in dB. 0 switches on abruptly; more blends in smoothly. \
+                 Try 6 dB for a gentler, less obvious effect on voice.",
+            ),
+            Param::new(concat!($name, " attack"), "ms", 0.0, 100.0, 10.0).help(
+                "How fast it clamps down on loud sound, in ms (thousandths of a second). \
+                 Short catches sudden peaks but can dull the start of words; long lets the punch through. Start at 10 ms.",
+            ),
+            Param::new(concat!($name, " hold"), "ms", 0.0, 500.0, 0.0).help(
+                "How long it stays turned down after the sound drops, in ms, before letting go. Start at 0. \
+                 Try 20 to 50 ms if it flutters on low voices or rapid syllables.",
+            ),
+            Param::new(concat!($name, " release"), "ms", 10.0, 1000.0, 120.0).log().help(
+                "How fast the volume comes back after a loud sound ends, in ms. \
+                 Short sounds lively but can pump; long is smooth but may duck the next word. Start at 120 ms; 100 to 250 suits speech.",
+            ),
+            Param::new(concat!($name, " RMS"), "", 0.0, 1.0, 0.0).help(
+                "How loudness is measured. Peak catches the loudest instant, so quick spikes are caught. \
+                 RMS averages over about 10 ms, which is smoother and closer to how you hear. RMS is a good start for voice.",
+            ),
+            Param::new(concat!($name, " floor"), "dB", -90.0, 0.0, -60.0).help(
+                "The quiet level, in dB, under which sound is turned down further, like a soft gate. \
+                 Raise it until fan or keyboard noise between words drops away; too high cuts quiet word endings. \
+                 Does nothing while Floor ratio is 1:1.",
+            ),
+            Param::new(concat!($name, " floor ratio"), "1:", 1.0, 4.0, 1.0).help(
+                "How strongly sound below the floor is pushed down. 1:1 is off; at 1:2 every dB under the floor falls another dB. \
+                 Start around 1:2. Raise it if keyboard or fan noise between words still comes through; too high cuts off quiet word endings.",
+            ),
         ]
     };
 }
 
 macro_rules! switches {
-    ($name:literal) => {
+    ($name:tt) => {
         [
-            Param::new(concat!($name, " solo"), "", 0.0, 1.0, 0.0),
-            Param::new(concat!($name, " mute"), "", 0.0, 1.0, 0.0),
-            Param::new(concat!($name, " bypass"), "", 0.0, 1.0, 0.0),
+            Param::new(concat!($name, " solo"), "", 0.0, 1.0, 0.0).help(concat!(
+                "Plays only the soloed bands, so you can hear what one range of your voice is doing. \
+                 Turn it off before going live or everyone hears just that band. ",
+                role!($name)
+            )),
+            Param::new(concat!($name, " mute"), "", 0.0, 1.0, 0.0).help(concat!(
+                "Silences this band completely. Good for checking what it contributes; turn it off before going live. ",
+                role!($name)
+            )),
+            Param::new(concat!($name, " bypass"), "", 0.0, 1.0, 0.0).help(concat!(
+                "Lets this band through uncompressed and with no gain changes, to compare with and without. ",
+                role!($name)
+            )),
         ]
     };
 }
 
 pub fn section() -> Section {
     let mut params = vec![
-        Param::new("Low crossover", "Hz", 60.0, 800.0, 200.0).log(),
-        Param::new("High crossover", "Hz", 1000.0, 8000.0, 3000.0).log(),
-        Param::new("Lookahead", "ms", 0.0, MAX_LOOKAHEAD_MS, 0.0),
+        Param::new("Low crossover", "Hz", 60.0, 800.0, 200.0).log().help(
+            "Where the Low band ends and the Mid band begins, in Hz (pitch: low numbers are bass). \
+             Start at 200 Hz. Drag the left divider on the graph to move it.",
+        ),
+        Param::new("High crossover", "Hz", 1000.0, 8000.0, 3000.0).log().help(
+            "Where the Mid band ends and the High band begins, in Hz. \
+             Start at 3000 Hz. Drag the right divider on the graph to move it.",
+        ),
+        Param::new("Lookahead", "ms", 0.0, MAX_LOOKAHEAD_MS, 0.0).help(
+            "Delays your voice slightly so the compressor sees a loud sound before it plays and can catch it from its first instant. \
+             0 is off. Every ms adds that much delay to your voice. Try 1 to 2 ms if the first syllable of a shout gets through.",
+        ),
     ];
     params.extend(strip!("Low", -24.0, 2.5));
     params.extend(switches!("Low"));
@@ -96,6 +150,10 @@ pub fn section() -> Section {
     params.extend(switches!("High"));
     params.extend(strip!("Master", -12.0, 1.0));
     Section::new(NAME, params)
+        .help(
+            "Evens out your volume by turning down the loud parts, so whispers and shouts sit closer together. \
+             Advanced splits your voice into Low, Mid and High bands, compresses each, then a Master compressor works on the sum.",
+        )
         .with_reduction_meters(&STRIPS)
         .with_level_meters(STRIPS.len() * 2)
         .with_renamed(&[
@@ -106,8 +164,19 @@ pub fn section() -> Section {
             ("High makeup", &["High output"]),
         ])
         .with_simple(
-            vec![Param::new("Amount", "%", 0.0, 100.0, 50.0)],
-            &[("Gentle", 25.0, ""), ("Voice", 50.0, ""), ("Strong", 80.0, "")],
+            vec![Param::new("Amount", "%", 0.0, 100.0, 50.0).help(
+                "How much to even out your volume, in one control: higher turns loud parts down harder, \
+                 and adds make-up volume so you do not get quieter. Start at 50. Tick Advanced for the full controls.",
+            )],
+            &[
+                ("Gentle", 25.0, "A light touch that keeps your natural dynamics. Sets Amount to 25%."),
+                ("Voice", 50.0, "A balanced everyday setting for chat and calls. Sets Amount to 50%."),
+                (
+                    "Strong",
+                    80.0,
+                    "Heavy levelling for loud games or a very dynamic voice. Can sound squashed and brings up background noise. Sets Amount to 80%.",
+                ),
+            ],
         )
 }
 
