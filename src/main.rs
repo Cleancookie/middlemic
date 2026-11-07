@@ -2,6 +2,8 @@
 
 #[cfg(windows)]
 mod audio;
+#[cfg(windows)]
+mod cpu;
 mod dsp;
 mod eq_panel;
 mod knob;

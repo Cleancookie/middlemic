@@ -1,6 +1,7 @@
 //! Simple egui front end: pick devices, start/stop, adjust each stage.
 
 use crate::audio::{self, Devices, Engine};
+use crate::cpu::CpuMeter;
 use crate::dsp;
 use crate::eq_panel::EqPanel;
 use crate::rack::{Rack, section_body};
@@ -15,13 +16,15 @@ const SYSTEM_DEFAULT: &str = "System default";
 const SAVE_EVERY: Duration = Duration::from_secs(1);
 /// Meters fall at this fraction per redraw.
 const METER_DECAY: f32 = 0.85;
+/// Narrower than this (in points, so DPI and zoom are already counted) the device bars use two rows.
+const WIDE: f32 = 620.0;
 
 pub fn run(settings: Arc<Settings>) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("middlemic")
             .with_inner_size([780.0, 860.0])
-            .with_min_inner_size([600.0, 420.0]),
+            .with_min_inner_size([420.0, 360.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -96,6 +99,7 @@ struct App {
     save_path: PathBuf,
     saved_text: String,
     last_save: Instant,
+    cpu: CpuMeter,
 }
 
 impl App {
@@ -136,6 +140,7 @@ impl App {
             save_path,
             saved_text: saved,
             last_save: Instant::now(),
+            cpu: CpuMeter::new(),
         };
         if app.output.is_empty() {
             app.status = "Pick an output device (a virtual cable such as CABLE Input).".into();
@@ -184,69 +189,93 @@ impl App {
         }
     }
 
-    fn device_row(&mut self, ui: &mut egui::Ui) {
-        let locked = self.running();
-        egui::Grid::new("devices").num_columns(2).show(ui, |ui| {
-            ui.label("Microphone");
-            ui.add_enabled_ui(!locked, |ui| {
-                egui::ComboBox::from_id_salt("input")
-                    .width(300.0)
-                    .selected_text(&self.input)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.input,
-                            SYSTEM_DEFAULT.to_string(),
-                            SYSTEM_DEFAULT,
-                        );
-                        for name in &self.devices.inputs {
-                            ui.selectable_value(&mut self.input, name.clone(), name);
-                        }
-                    });
-            });
-            ui.end_row();
-
-            ui.label("Output");
-            ui.add_enabled_ui(!locked, |ui| {
-                egui::ComboBox::from_id_salt("output")
-                    .width(300.0)
-                    .selected_text(if self.output.is_empty() { "Choose…" } else { &self.output })
-                    .show_ui(ui, |ui| {
-                        for name in &self.devices.outputs {
-                            ui.selectable_value(&mut self.output, name.clone(), name);
-                        }
-                    });
-            });
-            ui.end_row();
+    /// A device bar: title, device picker and level on the left, actions on the right.
+    /// Below `WIDE` points the actions drop to a second row so nothing clips.
+    fn device_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        title: &str,
+        level: f32,
+        picker: fn(&mut Self, &mut egui::Ui, f32),
+        actions: fn(&mut Self, &mut egui::Ui),
+    ) {
+        let width = ui.available_width();
+        let wide = width >= WIDE;
+        let picker_width = if wide { (width * 0.4).clamp(160.0, 380.0) } else { width - 90.0 };
+        ui.horizontal(|ui| {
+            ui.add_sized([60.0, ui.spacing().interact_size.y], egui::Label::new(egui::RichText::new(title).strong()));
+            ui.add_enabled_ui(!self.running(), |ui| picker(self, ui, picker_width.max(100.0)));
+            if wide {
+                level_bar(ui, (width * 0.15).clamp(60.0, 200.0), level);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| actions(self, ui));
+            }
         });
+        if !wide {
+            ui.horizontal(|ui| {
+                level_bar(ui, (width * 0.35).clamp(60.0, 200.0), level);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| actions(self, ui));
+            });
+        }
     }
 
-    fn controls_row(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if self.running() {
-                if ui.button("Stop").clicked() {
-                    self.stop();
+    fn input_picker(&mut self, ui: &mut egui::Ui, width: f32) {
+        egui::ComboBox::from_id_salt("input")
+            .width(width)
+            .truncate()
+            .selected_text(&self.input)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.input, SYSTEM_DEFAULT.to_string(), SYSTEM_DEFAULT);
+                for name in &self.devices.inputs {
+                    ui.selectable_value(&mut self.input, name.clone(), name);
                 }
-            } else if ui
-                .add_enabled(!self.output.is_empty(), egui::Button::new("Start"))
-                .clicked()
-            {
-                self.start();
+            });
+    }
+
+    fn input_actions(&mut self, ui: &mut egui::Ui) {
+        let locked = self.running();
+        if locked {
+            if ui.button("Stop").clicked() {
+                self.stop();
             }
-            if ui.add_enabled(!self.running(), egui::Button::new("Refresh devices")).clicked() {
-                if let Ok(devices) = audio::list_devices() {
-                    self.devices = devices;
+        } else if ui
+            .add_enabled(!self.output.is_empty(), egui::Button::new("Start"))
+            .clicked()
+        {
+            self.start();
+        }
+        if ui
+            .add_enabled(!locked, egui::Button::new("⟳"))
+            .on_hover_text("Refresh devices")
+            .clicked()
+        {
+            if let Ok(devices) = audio::list_devices() {
+                self.devices = devices;
+            }
+        }
+        if ui.button("Reset all").clicked() {
+            self.settings.reset();
+        }
+    }
+
+    fn output_picker(&mut self, ui: &mut egui::Ui, width: f32) {
+        egui::ComboBox::from_id_salt("output")
+            .width(width)
+            .truncate()
+            .selected_text(if self.output.is_empty() { "Choose…" } else { &self.output })
+            .show_ui(ui, |ui| {
+                for name in &self.devices.outputs {
+                    ui.selectable_value(&mut self.output, name.clone(), name);
                 }
-            }
-            if ui.button("Reset all").clicked() {
-                self.settings.reset();
-            }
-            if ui
-                .add_enabled(!self.running(), egui::Button::new("Set up virtual cable…"))
-                .clicked()
-            {
-                self.setup = SetupState::Confirm;
-            }
-        });
+            });
+    }
+
+    fn output_actions(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .add_enabled(!self.running(), egui::Button::new("Set up VB-CABLE…"))
+            .clicked()
+        {
+            self.setup = SetupState::Confirm;
+        }
     }
 
     /// Re-list devices, and point the output at the cable if it is there.
@@ -335,29 +364,36 @@ impl App {
         }
     }
 
-    fn meters(&mut self, ui: &mut egui::Ui) {
+    fn update_levels(&mut self) {
         let meters = &self.settings.meters;
         // -60 dBFS..0 dBFS across the bar.
         let to_frac = |peak: f32| ((20.0 * peak.max(1e-6).log10() + 60.0) / 60.0).clamp(0.0, 1.0);
         self.in_level = to_frac(meters.take_input()).max(self.in_level * METER_DECAY);
         self.out_level = to_frac(meters.take_output()).max(self.out_level * METER_DECAY);
-        egui::Grid::new("meters").num_columns(2).show(ui, |ui| {
-            ui.label("In");
-            ui.add(egui::ProgressBar::new(self.in_level).desired_width(300.0));
-            ui.end_row();
-            ui.label("Out");
-            ui.add(egui::ProgressBar::new(self.out_level).desired_width(300.0));
-            ui.end_row();
-        });
-        if self.running() {
-            ui.weak(format!(
-                "DSP load {:.1}% of one core · chain delay about {:.0} ms (plus 50 ms cushion and device buffers) · audio gaps: {}",
-                meters.load() * 100.0,
-                meters.latency_ms(),
-                meters.dropouts()
-            ));
-        }
     }
+
+    /// Footer: what the app costs, how late the audio is, and any error.
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
+        let cpu = self.cpu.percent();
+        let meters = &self.settings.meters;
+        ui.horizontal_wrapped(|ui| {
+            ui.weak(format!("CPU {cpu:.1}%"))
+                .on_hover_text("Whole app, as a share of all cores (as Task Manager shows it)");
+            if self.running() {
+                ui.weak(format!("· DSP {:.1}% of one core", meters.load() * 100.0));
+                ui.weak(format!("· delay ~{:.0} ms", meters.latency_ms()))
+                    .on_hover_text("Chain delay, plus a 50 ms cushion and device buffers");
+                ui.weak(format!("· gaps {}", meters.dropouts()));
+            }
+            if !self.status.is_empty() {
+                ui.colored_label(egui::Color32::LIGHT_RED, &self.status);
+            }
+        });
+    }
+}
+
+fn level_bar(ui: &mut egui::Ui, width: f32, level: f32) {
+    ui.add(egui::ProgressBar::new(level).desired_width(width).desired_height(8.0));
 }
 
 impl eframe::App for App {
@@ -373,15 +409,16 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.setup_window(&ctx);
 
+        self.update_levels();
+        let (in_level, out_level) = (self.in_level, self.out_level);
+        egui::Panel::top("input").show(ui, |ui| {
+            self.device_bar(ui, "INPUT", in_level, Self::input_picker, Self::input_actions)
+        });
+        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        egui::Panel::bottom("output").show(ui, |ui| {
+            self.device_bar(ui, "OUTPUT", out_level, Self::output_picker, Self::output_actions)
+        });
         egui::CentralPanel::default().show(ui, |ui| {
-            self.device_row(ui);
-            self.controls_row(ui);
-            if !self.status.is_empty() {
-                ui.colored_label(egui::Color32::LIGHT_RED, &self.status);
-            }
-            ui.separator();
-            self.meters(ui);
-            ui.separator();
             let running = self.running();
             self.eq_panel.update(&self.settings.meters, running);
             egui::ScrollArea::vertical().show(ui, |ui| {
