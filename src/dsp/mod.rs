@@ -1,14 +1,17 @@
 //! Platform-independent DSP. Every stage implements [`Processor`]; a [`Chain`]
 //! runs them in order, so stages can be reordered, swapped or duplicated.
 
+mod deepfilter;
 mod gain;
 mod limiter;
 
+pub use deepfilter::DeepFilter;
 pub use gain::Gain;
 pub use limiter::Limiter;
 
 /// One stage of the mic chain. Mono `f32` samples, processed in place.
-pub trait Processor: Send {
+/// Not `Send`: DeepFilterNet holds `Rc`. Build the chain on the thread that runs it.
+pub trait Processor {
     fn name(&self) -> &str;
 
     /// Called once before processing, and again if the sample rate changes.

@@ -62,16 +62,15 @@ fn find_device(
     bail!("no device matching {needle:?}; available: {seen:?}")
 }
 
-pub fn run(input: Option<String>, output: Option<String>, mut chain: Chain) -> Result<()> {
+/// `build_chain` runs on the DSP thread, because some stages are not `Send`.
+pub fn run(
+    input: Option<String>,
+    output: Option<String>,
+    build_chain: impl FnOnce() -> Result<Chain> + Send + 'static,
+) -> Result<()> {
     let running = Arc::new(AtomicBool::new(true));
     let (cap_prod, cap_cons) = HeapRb::<f32>::new(FRAME * RING_FRAMES).split();
     let (out_prod, out_cons) = HeapRb::<f32>::new(FRAME * 2 * RING_FRAMES).split();
-
-    chain.prepare(SAMPLE_RATE as u32);
-    eprintln!(
-        "chain latency: {:.1} ms",
-        chain.latency_samples() as f32 * 1000.0 / SAMPLE_RATE as f32
-    );
 
     let spawn = |name: &str, f: Box<dyn FnOnce() -> Result<()> + Send>| {
         let running = running.clone();
@@ -87,7 +86,10 @@ pub fn run(input: Option<String>, output: Option<String>, mut chain: Chain) -> R
     let r = running.clone();
     let capture = spawn("capture", Box::new(move || capture_loop(input, cap_prod, r)))?;
     let r = running.clone();
-    let dsp = spawn("dsp", Box::new(move || dsp_loop(cap_cons, out_prod, chain, r)))?;
+    let dsp = spawn(
+        "dsp",
+        Box::new(move || dsp_loop(cap_cons, out_prod, build_chain, r)),
+    )?;
     let r = running.clone();
     let render = spawn("render", Box::new(move || render_loop(output, out_cons, r)))?;
 
@@ -148,9 +150,15 @@ fn capture_loop(
 fn dsp_loop(
     mut input: impl Consumer<Item = f32>,
     mut output: impl Producer<Item = f32>,
-    mut chain: Chain,
+    build_chain: impl FnOnce() -> Result<Chain>,
     running: Arc<AtomicBool>,
 ) -> Result<()> {
+    let mut chain = build_chain()?;
+    chain.prepare(SAMPLE_RATE as u32);
+    eprintln!(
+        "chain latency: {:.0} ms (estimate)",
+        chain.latency_samples() as f32 * 1000.0 / SAMPLE_RATE as f32
+    );
     let mut mono = [0f32; FRAME];
     let mut stereo = [0f32; FRAME * 2];
     while running.load(Ordering::Relaxed) {

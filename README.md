@@ -19,10 +19,10 @@ Early. Working today:
 - Capture from any recording device, process, play to any playback device (WASAPI, shared mode)
 - Pluggable chain: every stage implements `Processor`, so stages can be swapped, reordered or stacked
 - Gain and limiter stages
+- DeepFilterNet3 noise removal (about 1.6% of one core in testing, around 40 ms added latency, estimated)
 
 Planned:
 
-- [ ] DeepFilterNet noise removal
 - [ ] EQ, de-esser, multiband compressor
 - [ ] Small UI, tray icon, presets
 - [ ] One-time setup that offers to install VB-Cable
@@ -51,7 +51,13 @@ cargo test
 ```sh
 middlemic.exe devices
 middlemic.exe run --input "Headset Microphone" --output "CABLE Input" --gain-db 6
+middlemic.exe run --denoise-limit-db 30   # gentler noise removal
+middlemic.exe run --no-denoise            # skip noise removal
 ```
+
+DeepFilterNet comes from a pinned git commit of
+[Rikorose/DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) (MIT OR Apache-2.0),
+because the crates.io release has no inference code.
 
 ## Licence
 

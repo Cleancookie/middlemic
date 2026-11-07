@@ -5,10 +5,22 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Lightweight mic processing chain for Windows"
 
+[profile.release]
+strip = true
+lto = "thin"
+
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 ringbuf = "0.6.0"
+ndarray = "0.15"
+# deep_filter only says ^0.21.4, but tract 0.21.19 breaks its API (symbol_table). Keep exact.
+tract-core = "=0.21.4"
+tract-onnx = "=0.21.4"
+tract-pulse = "=0.21.4"
+tract-hir = "=0.21.4"
+# Not on crates.io: the published 0.2.5 has no inference code.
+deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", rev = "7b14b895fe7fc42cab72b4a4c1e49c982bd6404b", default-features = false, features = ["tract", "default-model"] }
 
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.27.0"

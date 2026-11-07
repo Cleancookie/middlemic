@@ -29,6 +29,12 @@ enum Command {
         /// Mic boost in dB.
         #[arg(long, default_value_t = 0.0)]
         gain_db: f32,
+        /// Skip DeepFilterNet noise removal.
+        #[arg(long)]
+        no_denoise: bool,
+        /// Cap noise removal at this many dB (25-40 sounds more natural). Default: no cap.
+        #[arg(long)]
+        denoise_limit_db: Option<f32>,
     },
 }
 
@@ -40,11 +46,18 @@ fn main() -> Result<()> {
             input,
             output,
             gain_db,
+            no_denoise,
+            denoise_limit_db,
         } => {
-            let mut chain = dsp::Chain::new();
-            chain.push(dsp::Gain::new(gain_db));
-            chain.push(dsp::Limiter::new(-1.0));
-            audio::run(input, output, chain)
+            audio::run(input, output, move || {
+                let mut chain = dsp::Chain::new();
+                if !no_denoise {
+                    chain.push(dsp::DeepFilter::new(denoise_limit_db)?);
+                }
+                chain.push(dsp::Gain::new(gain_db));
+                chain.push(dsp::Limiter::new(-1.0));
+                Ok(chain)
+            })
         }
     }
 }
