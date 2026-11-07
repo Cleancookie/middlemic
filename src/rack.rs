@@ -2,7 +2,9 @@
 //! arrow, bypass switch, name and live readout, and the stage's controls when unfolded.
 
 use crate::settings::{Param, Section, Settings, moved};
-use egui::{Align, Color32, CursorIcon, Layout, Rect, Response, Sense, Stroke, Ui, vec2};
+use crate::theme;
+use egui::{Align, Color32, CursorIcon, Id, Layout, Rect, Response, Sense, Shape, Stroke, Ui, UiBuilder, vec2};
+use std::f32::consts::FRAC_PI_2;
 use std::sync::atomic::Ordering;
 
 /// Gain-reduction bars span 0..this many dB.
@@ -41,7 +43,7 @@ pub struct RackHeader {
 fn grip_handle(ui: &mut Ui) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(14.0, 18.0), Sense::drag());
     let active = response.hovered() || response.dragged();
-    let color = if active { Color32::WHITE } else { Color32::GRAY };
+    let color = if active { theme::TEXT } else { theme::TEXT_DIM };
     for dy in [-4.0, 0.0, 4.0] {
         ui.painter().line_segment(
             [rect.center() + vec2(-5.0, dy), rect.center() + vec2(5.0, dy)],
@@ -53,10 +55,41 @@ fn grip_handle(ui: &mut Ui) -> Response {
         .on_hover_text("Drag to reorder")
 }
 
-fn fold_arrow(ui: &mut Ui, open: bool) -> Response {
-    let (_, response) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
-    egui::collapsing_header::paint_default_icon(ui, if open { 1.0 } else { 0.0 }, &response);
+/// A chevron that turns from pointing right to pointing down as `openness` goes 0 to 1.
+fn fold_arrow(ui: &mut Ui, openness: f32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+    let color = if response.hovered() { theme::TEXT } else { theme::TEXT_DIM };
+    let turn = egui::emath::Rot2::from_angle(openness * FRAC_PI_2);
+    let points = [vec2(-2.5, -4.0), vec2(2.0, 0.0), vec2(-2.5, 4.0)].map(|p| rect.center() + turn * p);
+    ui.painter().add(Shape::line(points.to_vec(), Stroke::new(1.8, color)));
     response.on_hover_text("Fold or unfold")
+}
+
+/// The bypass switch: a ring that fills with a dot of the accent colour when the stage is on.
+fn power_dot(ui: &mut Ui, on_t: f32, accent: Color32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+    let ring = theme::OUTLINE_OFF.lerp_to_gamma(accent, on_t);
+    ui.painter().circle_stroke(rect.center(), 6.0, Stroke::new(1.5, ring));
+    ui.painter().circle_filled(rect.center(), 3.5 * on_t, accent);
+    response.on_hover_text("On / bypass")
+}
+
+/// Draws `body` clipped to a height that follows `openness`, fading in as it opens.
+/// The clip uses the height measured last frame, which only differs while the body is changing.
+fn fold_body(ui: &mut Ui, id: Id, openness: f32, body: impl FnOnce(&mut Ui)) {
+    let width = ui.available_width();
+    let known: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
+    let animating = openness < 1.0;
+    let mut child = ui.new_child(UiBuilder::new().max_rect(ui.available_rect_before_wrap()));
+    if animating {
+        let visible = Rect::from_min_size(child.max_rect().min, vec2(width, known * openness));
+        child.set_clip_rect(visible.intersect(ui.clip_rect()));
+        child.set_opacity(openness);
+    }
+    body(&mut child);
+    let full = child.min_rect().height();
+    ui.data_mut(|d| d.insert_temp(id, full));
+    ui.allocate_space(vec2(width, if animating { known * openness } else { full }));
 }
 
 /// Which gap between the rows (`0..=rows.len()`) the pointer is in: before the first row
@@ -74,32 +107,42 @@ fn gap_line_y(gap: usize, rows: &[Rect]) -> f32 {
     }
 }
 
-/// One row of the rack. `body` runs only when unfolded and gets the gain reduction (dB) of
-/// each of the stage's meters.
-pub fn rack_item(ui: &mut Ui, section: &Section, body: impl FnOnce(&mut Ui, &[f32])) -> RackHeader {
+const ROW_RADIUS: u8 = 8;
+
+/// One row of the rack, outlined in `accent` (grey when bypassed). `body` runs only when
+/// unfolded and gets the gain reduction (dB) of each of the stage's meters.
+pub fn rack_item(ui: &mut Ui, section: &Section, accent: Color32, body: impl FnOnce(&mut Ui, &[f32])) -> RackHeader {
     let reductions = reductions_this_frame(ui, section);
     let worst = reductions.iter().copied().fold(0.0, f32::max);
     let open = section.open.load(Ordering::Relaxed);
+    let on = section.is_enabled();
+    let id = ui.make_persistent_id(section.name);
+    let ctx = ui.ctx().clone();
+    let open_t = theme::animate(&ctx, id.with("open"), open);
+    let on_t = theme::animate(&ctx, id.with("on"), on);
 
-    let shown = egui::Frame::group(ui.style())
+    let shown = egui::Frame::new()
+        .fill(theme::PANEL)
+        .corner_radius(ROW_RADIUS)
+        .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             let header = ui
                 .horizontal(|ui| {
                     let grip = grip_handle(ui);
-                    let arrow = fold_arrow(ui, open);
-
-                    let mut on = section.is_enabled();
-                    let power = ui.checkbox(&mut on, "").on_hover_text("On / bypass");
-                    if power.changed() {
-                        section.enabled.store(on, Ordering::Relaxed);
+                    let arrow = fold_arrow(ui, open_t);
+                    let power = power_dot(ui, on_t, accent);
+                    if power.clicked() {
+                        section.enabled.store(!on, Ordering::Relaxed);
                     }
 
-                    let mut name = egui::RichText::new(section.name).strong();
-                    if !on {
-                        name = name.color(Color32::GRAY);
-                    }
-                    let title = ui.add(egui::Label::new(name).sense(egui::Sense::click()));
+                    let color = theme::TEXT_DIM.lerp_to_gamma(accent, on_t);
+                    let name = egui::RichText::new(section.name.to_uppercase())
+                        .strong()
+                        .size(13.0)
+                        .extra_letter_spacing(1.0)
+                        .color(color);
+                    let title = ui.add(egui::Label::new(name).sense(Sense::click()));
                     if arrow.clicked() || title.clicked() {
                         section.open.store(!open, Ordering::Relaxed);
                     }
@@ -115,19 +158,24 @@ pub fn rack_item(ui: &mut Ui, section: &Section, body: impl FnOnce(&mut Ui, &[f3
                             }
                         }
                         if on && worst >= REDUCTION_SHOWN_DB {
-                            ui.colored_label(Color32::from_rgb(250, 170, 70), format!("-{worst:.1} dB"));
+                            ui.colored_label(theme::WARN, format!("-{worst:.1} dB"));
                         }
                     });
                     RackHeader { grip, arrow, power, rect: Rect::NOTHING }
                 })
                 .inner;
-            if open {
-                ui.separator();
-                body(ui, &reductions);
+            if open || open_t > 0.0 {
+                ui.add_space(6.0);
+                fold_body(ui, id.with("body"), open_t, |ui| body(ui, &reductions));
             }
             header
         });
-    RackHeader { rect: shown.response.rect, ..shown.inner }
+
+    let rect = shown.response.rect;
+    let hover_t = theme::animate(&ctx, id.with("hover"), ui.rect_contains_pointer(rect));
+    let outline = theme::OUTLINE_OFF.lerp_to_gamma(accent, on_t).lerp_to_gamma(theme::TEXT, 0.25 * hover_t);
+    ui.painter().rect_stroke(rect, ROW_RADIUS, Stroke::new(1.5 + 0.5 * hover_t, outline), egui::StrokeKind::Inside);
+    RackHeader { rect, ..shown.inner }
 }
 
 /// The list of stages, in their running order, with drag-and-drop reordering.
@@ -145,9 +193,12 @@ impl Rack {
     pub fn show(&mut self, ui: &mut Ui, settings: &Settings, mut body: impl FnMut(&mut Ui, &Section, &[f32])) {
         self.rows.clear();
         self.grips.clear();
-        for (position, &index) in settings.order.get().iter().enumerate() {
+        let order = settings.order.get();
+        let count = order.len();
+        for (position, &index) in order.iter().enumerate() {
             let section = &settings.sections[index];
-            let header = rack_item(ui, section, |ui, reductions| body(ui, section, reductions));
+            let accent = theme::accent(position, count);
+            let header = rack_item(ui, section, accent, |ui, reductions| body(ui, section, reductions));
             self.rows.push(header.rect);
             self.grips.push(header.grip.rect);
             if header.grip.drag_started() {
@@ -177,7 +228,7 @@ impl Rack {
         ui.painter().hline(
             self.rows[0].x_range(),
             y,
-            Stroke::new(3.0, Color32::from_rgb(90, 160, 255)),
+            Stroke::new(3.0, theme::DEESSER),
         );
         if released || cancelled {
             if released && !cancelled {
@@ -192,7 +243,7 @@ impl Rack {
 pub fn section_body(ui: &mut Ui, section: &Section, reductions: &[f32]) {
     let status = section.status();
     if !status.is_empty() {
-        ui.colored_label(Color32::LIGHT_RED, status);
+        ui.colored_label(theme::ERROR, status);
     }
     if !reductions.is_empty() {
         egui::Grid::new((section.name, "reduction")).num_columns(2).show(ui, |ui| {
@@ -270,7 +321,7 @@ mod tests {
             };
             self.body_drawn.set(false);
             let _ = self.ctx.run_ui(input, |ui| {
-                let header = rack_item(ui, section, |ui, reductions| {
+                let header = rack_item(ui, section, theme::accent(0, 1), |ui, reductions| {
                     self.body_drawn.set(true);
                     *self.shown_reductions.borrow_mut() = reductions.to_vec();
                     section_body(ui, section, reductions);
@@ -290,7 +341,12 @@ mod tests {
             self.frame(section, vec![Event::PointerMoved(at)]);
             self.frame(section, vec![button(true)]);
             self.frame(section, vec![button(false)]);
-            self.frame(section, vec![]);
+            self.settle(section);
+        }
+
+        /// Runs long enough for the fold and fade animations to finish.
+        fn settle(&self, section: &Section) {
+            (0..30).for_each(|_| self.frame(section, vec![]));
         }
     }
 
@@ -435,7 +491,7 @@ mod tests {
         assert!(h.body_drawn.get());
 
         section.open.store(false, Ordering::Relaxed);
-        h.frame(&section, vec![]);
+        h.settle(&section);
         assert!(!h.body_drawn.get(), "folded rows draw no body");
     }
 
@@ -503,7 +559,7 @@ mod tests {
         let drawn = std::cell::Cell::new(0);
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             for s in &settings.sections {
-                rack_item(ui, s, |ui, r| {
+                rack_item(ui, s, theme::accent(0, 1), |ui, r| {
                     drawn.set(drawn.get() + 1);
                     section_body(ui, s, r);
                 });

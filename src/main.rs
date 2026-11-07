@@ -14,6 +14,7 @@ mod rack;
 mod settings;
 mod setup;
 mod spectrum;
+mod theme;
 #[cfg(windows)]
 mod ui;
 

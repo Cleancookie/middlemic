@@ -3,6 +3,7 @@
 
 use crate::dsp::{BANDS, response_db};
 use crate::knob::knob;
+use crate::theme;
 use crate::settings::{Meters, Section};
 use crate::spectrum::{
     Analyzer, FFT_LEN, FLOOR_DB, MAX_HZ, MIN_HZ, freq_to_x, heat, to_columns, x_to_freq,
@@ -14,9 +15,10 @@ use egui::{
 use std::time::{Duration, Instant};
 
 const SAMPLE_RATE: f32 = 48_000.0;
-const PLOT_HEIGHT: f32 = 230.0;
-const SPECTROGRAM_HEIGHT: f32 = 130.0;
-const MIN_WIDTH: f32 = 480.0;
+/// Plot and spectrogram heights are a share of the width, clamped (points).
+const PLOT_HEIGHT: (f32, f32, f32) = (0.42, 140.0, 300.0);
+const SPECTROGRAM_HEIGHT: (f32, f32, f32) = (0.22, 80.0, 160.0);
+const MIN_WIDTH: f32 = 200.0;
 /// Columns across the plot.
 const PLOT_POINTS: usize = 240;
 const CURVE_POINTS: usize = 200;
@@ -162,41 +164,40 @@ impl EqPanel {
     }
 
     fn plot(&mut self, ui: &mut Ui, section: &Section) {
-        let width = ui.available_width().max(MIN_WIDTH);
-        let (rect, _) = ui.allocate_exact_size(vec2(width, PLOT_HEIGHT), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(sized(ui, PLOT_HEIGHT), Sense::hover());
         self.plot_rect = rect;
         let plot = Plot { rect };
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 4.0, Color32::from_rgb(16, 18, 24));
+        painter.rect_filled(rect, 6.0, theme::PLOT_BG);
         let on = section.is_enabled();
 
         for (freq, label) in GRID_FREQS {
             let x = plot.x(freq);
             painter.line_segment(
                 [pos2(x, rect.top()), pos2(x, rect.bottom())],
-                Stroke::new(1.0, Color32::from_gray(38)),
+                Stroke::new(1.0, theme::GRID),
             );
             painter.text(
                 pos2(x + 2.0, rect.bottom() - 2.0),
                 Align2::LEFT_BOTTOM,
                 label,
                 FontId::proportional(10.0),
-                Color32::from_gray(110),
+                theme::TEXT_DIM,
             );
         }
         for db in [-12.0, -6.0, 0.0, 6.0, 12.0] {
             let y = plot.y_gain(db);
-            let strength = if db == 0.0 { 70 } else { 38 };
+            let line = if db == 0.0 { theme::GRID_STRONG } else { theme::GRID };
             painter.line_segment(
                 [pos2(rect.left(), y), pos2(rect.right(), y)],
-                Stroke::new(1.0, Color32::from_gray(strength)),
+                Stroke::new(1.0, line),
             );
             painter.text(
                 pos2(rect.left() + 3.0, y - 1.0),
                 Align2::LEFT_BOTTOM,
                 format!("{db:+.0}"),
                 FontId::proportional(10.0),
-                Color32::from_gray(110),
+                theme::TEXT_DIM,
             );
         }
 
@@ -219,7 +220,7 @@ impl EqPanel {
             .enumerate()
             .map(|(i, &db)| pos2(rect.left() + (i as f32 + 0.5) * column_width, plot.y_level(db)))
             .collect();
-        painter.add(Shape::line(input_line, Stroke::new(1.0, Color32::from_gray(120))));
+        painter.add(Shape::line(input_line, Stroke::new(1.0, theme::SPECTRUM_IN)));
 
         // The EQ curve.
         let freqs: Vec<f32> = (0..CURVE_POINTS)
@@ -281,8 +282,7 @@ impl EqPanel {
             }
             self.texture_stale = false;
         }
-        let width = ui.available_width().max(MIN_WIDTH);
-        let (rect, _) = ui.allocate_exact_size(vec2(width, SPECTROGRAM_HEIGHT), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(sized(ui, SPECTROGRAM_HEIGHT), Sense::hover());
         let painter = ui.painter_at(rect);
         if let Some(texture) = &self.texture {
             painter.image(
@@ -310,7 +310,7 @@ impl EqPanel {
         let y = y_of(deesser_hz.clamp(MIN_HZ, MAX_HZ));
         painter.extend(Shape::dashed_line(
             &[pos2(rect.left() + 40.0, y), pos2(rect.right(), y)],
-            Stroke::new(1.0, Color32::from_rgb(90, 220, 230)),
+            Stroke::new(1.0, theme::DEESSER),
             5.0,
             4.0,
         ));
@@ -319,7 +319,7 @@ impl EqPanel {
             Align2::RIGHT_BOTTOM,
             "de-esser starts here",
             FontId::proportional(10.0),
-            Color32::from_rgb(90, 220, 230),
+            theme::DEESSER,
         );
         painter.text(
             pos2(rect.right() - 4.0, rect.top() + 3.0),
@@ -329,6 +329,12 @@ impl EqPanel {
             Color32::from_gray(190),
         );
     }
+}
+
+/// Full available width, with a height that follows it.
+fn sized(ui: &Ui, (share, min, max): (f32, f32, f32)) -> egui::Vec2 {
+    let width = ui.available_width().max(MIN_WIDTH);
+    vec2(width, (width * share).clamp(min, max))
 }
 
 /// Rises instantly, falls at a steady rate.

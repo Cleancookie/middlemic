@@ -1,7 +1,8 @@
-//! A rotary knob in the style of a plugin: drag up/down to turn, shift for fine control,
+//! A flat rotary knob: a ring with a value arc in the stage accent. Drag up/down to turn, shift for fine control,
 //! scroll to nudge, double-click to reset.
 
 use crate::settings::Param;
+use crate::theme;
 use egui::{Color32, Pos2, Sense, Shape, Stroke, Ui, vec2};
 use std::f32::consts::PI;
 
@@ -39,6 +40,9 @@ fn turned(norm: f32, drag_up: f32, scroll_up: f32, fine: bool) -> Option<f32> {
 pub fn knob(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Response {
     ui.vertical(|ui| {
         ui.set_width(SIZE + 12.0);
+        ui.vertical_centered(|ui| {
+            ui.label(egui::RichText::new(label.to_uppercase()).size(9.5).extra_letter_spacing(0.8).color(theme::TEXT_DIM))
+        });
         let (rect, response) = ui.allocate_exact_size(vec2(SIZE + 12.0, SIZE), Sense::click_and_drag());
         let centre = rect.center();
 
@@ -62,24 +66,22 @@ pub fn knob(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Re
         } else {
             0.0
         };
+        let hover = theme::animate(ui.ctx(), response.id.with("hover"), response.hovered() || response.dragged());
         let painter = ui.painter();
-        painter.add(Shape::line(arc(centre, 0.0, 1.0), Stroke::new(3.0, Color32::from_gray(60))));
+        painter.add(Shape::line(arc(centre, 0.0, 1.0), Stroke::new(2.5, theme::GRID_STRONG)));
+        painter.circle_filled(centre, RADIUS - 5.0, theme::PANEL.lerp_to_gamma(theme::GRID, hover));
         if (norm - origin).abs() > 0.002 {
-            painter.add(Shape::line(arc(centre, origin, norm), Stroke::new(3.5, color)));
+            painter.add(Shape::line(arc(centre, origin, norm), Stroke::new(3.0, color)));
         }
         let a = angle(norm);
         let dir = vec2(a.cos(), a.sin());
         painter.line_segment(
-            [centre + dir * (RADIUS * 0.35), centre + dir * (RADIUS * 0.85)],
-            Stroke::new(2.0, Color32::WHITE),
+            [centre + dir * (RADIUS * 0.15), centre + dir * (RADIUS * 0.6)],
+            Stroke::new(2.0, theme::TEXT),
         );
 
-        let hover = response.hovered() || response.dragged();
-        let text = if hover { Color32::WHITE } else { Color32::from_gray(200) };
-        ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new(param.display()).size(11.0).color(text));
-            ui.label(egui::RichText::new(label).size(10.0).color(Color32::GRAY));
-        });
+        let text = theme::TEXT_DIM.lerp_to_gamma(theme::TEXT, hover);
+        ui.vertical_centered(|ui| ui.label(egui::RichText::new(param.display()).size(11.0).color(text)));
         response.on_hover_text(format!("{}: drag, scroll, shift for fine, double-click resets", param.name))
     })
     .inner
