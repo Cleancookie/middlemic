@@ -309,12 +309,24 @@ impl App {
     }
 }
 
+/// Gain-reduction bars span 0..this many dB.
+const REDUCTION_RANGE_DB: f32 = 24.0;
+/// Below this the header shows nothing, so it only lights up when the stage is working.
+const REDUCTION_SHOWN_DB: f32 = 0.5;
+
 fn section_ui(ui: &mut egui::Ui, section: &Section, open: bool) {
-    let title = if section.is_enabled() {
-        section.name.to_string()
-    } else {
-        format!("{}  (off)", section.name)
-    };
+    // Read once per redraw: the readings reset when taken.
+    let reductions: Vec<f32> = (0..section.reduction_labels.len())
+        .map(|slot| section.take_reduction(slot))
+        .collect();
+    let worst = reductions.iter().copied().fold(0.0, f32::max);
+
+    let mut title = section.name.to_string();
+    if !section.is_enabled() {
+        title.push_str("  (off)");
+    } else if worst >= REDUCTION_SHOWN_DB {
+        title.push_str(&format!("   ▼ {worst:.1} dB"));
+    }
     egui::CollapsingHeader::new(title)
         .id_salt(section.name)
         .default_open(open)
@@ -328,6 +340,19 @@ fn section_ui(ui: &mut egui::Ui, section: &Section, open: bool) {
                     section.reset();
                 }
             });
+            if !reductions.is_empty() {
+                egui::Grid::new((section.name, "reduction")).num_columns(2).show(ui, |ui| {
+                    for (label, db) in section.reduction_labels.iter().zip(&reductions) {
+                        ui.label(format!("{label} turned down"));
+                        ui.add(
+                            egui::ProgressBar::new(db / REDUCTION_RANGE_DB)
+                                .desired_width(220.0)
+                                .text(format!("{db:.1} dB")),
+                        );
+                        ui.end_row();
+                    }
+                });
+            }
             ui.add_enabled_ui(section.is_enabled(), |ui| {
                 ui.spacing_mut().slider_width = 220.0;
                 for p in &section.params {

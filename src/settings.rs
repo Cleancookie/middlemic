@@ -61,6 +61,9 @@ pub struct Section {
     pub name: &'static str,
     pub enabled: AtomicBool,
     pub params: Vec<Param>,
+    /// One label per gain-reduction meter this stage reports (empty for most stages).
+    pub reduction_labels: Vec<&'static str>,
+    reduction: Vec<AtomicU32>,
 }
 
 impl Section {
@@ -69,7 +72,25 @@ impl Section {
             name,
             enabled: AtomicBool::new(true),
             params,
+            reduction_labels: Vec::new(),
+            reduction: Vec::new(),
         }
+    }
+
+    /// Give the stage gain-reduction meters, one per label.
+    pub fn with_reduction_meters(mut self, labels: &[&'static str]) -> Self {
+        self.reduction_labels = labels.to_vec();
+        self.reduction = labels.iter().map(|_| AtomicU32::new(0)).collect();
+        self
+    }
+
+    /// Keeps the largest reduction (dB, positive) since the UI last looked.
+    pub fn record_reduction(&self, slot: usize, db: f32) {
+        self.reduction[slot].fetch_max(db.max(0.0).to_bits(), Relaxed);
+    }
+
+    pub fn take_reduction(&self, slot: usize) -> f32 {
+        f32::from_bits(self.reduction[slot].swap(0, Relaxed))
     }
 
     pub fn get(&self, index: usize) -> f32 {
@@ -244,6 +265,17 @@ mod tests {
         let s = settings();
         s.apply_text("[Nope]\nBoost=9\n[EQ]\nBoost=abc\nwhat\n");
         assert_eq!(s.section("EQ").params[0].get(), 5.0);
+    }
+
+    #[test]
+    fn reduction_meter_keeps_largest_until_read() {
+        let s = Section::new("C", vec![]).with_reduction_meters(&["Low", "High"]);
+        s.record_reduction(1, 2.0);
+        s.record_reduction(1, 7.5);
+        s.record_reduction(1, -3.0);
+        assert_eq!(s.take_reduction(1), 7.5);
+        assert_eq!(s.take_reduction(1), 0.0);
+        assert_eq!(s.take_reduction(0), 0.0);
     }
 
     #[test]

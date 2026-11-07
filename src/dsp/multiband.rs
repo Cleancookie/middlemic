@@ -31,7 +31,7 @@ pub fn section() -> Section {
     params.extend(band("Low threshold", "Low ratio", "Low makeup", 2.5));
     params.extend(band("Mid threshold", "Mid ratio", "Mid makeup", 3.0));
     params.extend(band("High threshold", "High ratio", "High makeup", 2.0));
-    Section::new(NAME, params)
+    Section::new(NAME, params).with_reduction_meters(&["Low", "Mid", "High"])
 }
 
 /// Three-band compressor. Bands are split with Linkwitz-Riley crossovers and the low band is
@@ -89,6 +89,7 @@ impl Processor for Multiband {
             self.comps[band].set_times(self.fs, attack, release);
         }
 
+        let mut worst = [0f32; 3];
         for sample in samples {
             let (low, rest) = self.low_split.split(*sample);
             let (mid, high) = self.high_split.split(rest);
@@ -98,8 +99,12 @@ impl Processor for Multiband {
             for (band, x) in bands.into_iter().enumerate() {
                 let g = self.comps[band].gain(x, threshold[band], ratio[band], 60.0);
                 out += x * g * makeup[band];
+                worst[band] = worst[band].max(self.comps[band].reduction_db());
             }
             *sample = out;
+        }
+        for (band, db) in worst.into_iter().enumerate() {
+            self.section.record_reduction(band, db);
         }
     }
 }
@@ -131,6 +136,17 @@ mod tests {
             let r = run(freq, 0.5, section());
             assert!(r < 0.85, "{freq} Hz was not compressed: {r}");
         }
+    }
+
+    #[test]
+    fn meters_show_which_band_is_working() {
+        let s = Arc::new(section());
+        let mut m = Multiband::new(s.clone());
+        m.prepare(48_000);
+        m.process(&mut sine(1_000.0, 48_000, 0.5));
+        let (low, mid, high) = (s.take_reduction(0), s.take_reduction(1), s.take_reduction(2));
+        assert!(mid > 3.0, "mid {mid}");
+        assert!(low < 1.0 && high < 1.0, "low {low} high {high}");
     }
 
     #[test]

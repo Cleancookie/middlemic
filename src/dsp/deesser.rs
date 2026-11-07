@@ -21,6 +21,7 @@ pub fn section() -> Section {
             Param::new("Max reduction", "dB", 0.0, 20.0, 8.0),
         ],
     )
+    .with_reduction_meters(&["Sibilance"])
 }
 
 /// Split-band: only the sibilance band above `Frequency` is turned down.
@@ -59,10 +60,13 @@ impl Processor for DeEsser {
         let threshold = self.section.get(THRESHOLD);
         let max_reduction = self.section.get(MAX_REDUCTION);
         self.split.set_freq(self.fs, self.section.get(FREQ));
+        let mut worst = 0f32;
         for s in samples {
             let (low, high) = self.split.split(*s);
             *s = low + high * self.comp.gain(high, threshold, RATIO, max_reduction);
+            worst = worst.max(self.comp.reduction_db());
         }
+        self.section.record_reduction(0, worst);
     }
 }
 
@@ -82,6 +86,21 @@ mod tests {
     fn loud_sibilance_is_reduced_voice_is_not() {
         assert!(level_after(8_000.0) < 0.6, "8 kHz {}", level_after(8_000.0));
         assert!(level_after(300.0) > 0.97, "300 Hz {}", level_after(300.0));
+    }
+
+    #[test]
+    fn meter_shows_the_reduction_it_applied() {
+        let s = Arc::new(section());
+        let mut d = DeEsser::new(s.clone());
+        d.process(&mut sine(8_000.0, 48_000, 0.3));
+        let loud = s.take_reduction(0);
+        assert!(loud > 3.0 && loud <= 8.01, "{loud}");
+
+        d.process(&mut sine(300.0, 48_000, 0.3));
+        d.process(&mut sine(300.0, 48_000, 0.3));
+        s.take_reduction(0);
+        d.process(&mut sine(300.0, 4_800, 0.3));
+        assert!(s.take_reduction(0) < 0.5);
     }
 
     #[test]

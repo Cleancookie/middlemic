@@ -50,7 +50,6 @@ impl GainComputer {
     }
 
     /// Current gain reduction in dB (positive).
-    #[cfg(test)]
     pub fn reduction_db(&self) -> f32 {
         self.reduction_db
     }
