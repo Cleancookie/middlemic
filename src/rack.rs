@@ -3,7 +3,7 @@
 
 use crate::settings::{Param, Section, Settings, moved};
 use crate::theme;
-use egui::{Align, Color32, CursorIcon, Id, Layout, Rect, Response, Sense, Shape, Stroke, Ui, UiBuilder, vec2};
+use egui::{Align, Color32, CursorIcon, Id, Layout, Rect, Response, Sense, Shape, Stroke, Ui, UiBuilder, pos2, vec2};
 use std::f32::consts::FRAC_PI_2;
 use std::sync::atomic::Ordering;
 
@@ -74,22 +74,29 @@ fn power_dot(ui: &mut Ui, on_t: f32, accent: Color32) -> Response {
     response.on_hover_text("On / bypass")
 }
 
-/// Draws `body` clipped to a height that follows `openness`, fading in as it opens.
-/// The clip uses the height measured last frame, which only differs while the body is changing.
-fn fold_body(ui: &mut Ui, id: Id, openness: f32, body: impl FnOnce(&mut Ui)) {
+/// Gap between a row's header and its controls; it folds away with them.
+const BODY_GAP: f32 = 8.0;
+
+/// Draws `body` from `top` (the header's bottom edge), clipped to a height that follows
+/// `openness` and fading in as it opens. The gap above the body is inside the animated
+/// height and nothing else is allocated, so the row ends exactly at the header when shut.
+fn fold_body(ui: &mut Ui, id: Id, top: f32, openness: f32, body: impl FnOnce(&mut Ui)) {
+    let left = ui.max_rect().left();
     let width = ui.available_width();
+    // Last frame's height only sets the clip; the first frame of a never-opened row is hidden.
     let known: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
-    let animating = openness < 1.0;
-    let mut child = ui.new_child(UiBuilder::new().max_rect(ui.available_rect_before_wrap()));
-    if animating {
-        let visible = Rect::from_min_size(child.max_rect().min, vec2(width, known * openness));
+    let start = pos2(left, top);
+    let mut child = ui.new_child(UiBuilder::new().max_rect(Rect::from_min_size(start, vec2(width, f32::INFINITY))));
+    if openness < 1.0 {
+        let visible = Rect::from_min_size(start, vec2(width, known * openness));
         child.set_clip_rect(visible.intersect(ui.clip_rect()));
         child.set_opacity(openness);
     }
+    child.add_space(BODY_GAP);
     body(&mut child);
-    let full = child.min_rect().height();
+    let full = child.min_rect().bottom() - top;
     ui.data_mut(|d| d.insert_temp(id, full));
-    ui.allocate_space(vec2(width, if animating { known * openness } else { full }));
+    ui.allocate_rect(Rect::from_min_size(start, vec2(width, full * openness)), Sense::hover());
 }
 
 /// Which gap between the rows (`0..=rows.len()`) the pointer is in: before the first row
@@ -127,8 +134,7 @@ pub fn rack_item(ui: &mut Ui, section: &Section, accent: Color32, body: impl FnO
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            let header = ui
-                .horizontal(|ui| {
+            let header = ui.horizontal(|ui| {
                     let grip = grip_handle(ui);
                     let arrow = fold_arrow(ui, open_t);
                     let power = power_dot(ui, on_t, accent);
@@ -162,13 +168,12 @@ pub fn rack_item(ui: &mut Ui, section: &Section, accent: Color32, body: impl FnO
                         }
                     });
                     RackHeader { grip, arrow, power, rect: Rect::NOTHING }
-                })
-                .inner;
+                });
             if open || open_t > 0.0 {
-                ui.add_space(6.0);
-                fold_body(ui, id.with("body"), open_t, |ui| body(ui, &reductions));
+                let top = header.response.rect.bottom();
+                fold_body(ui, id.with("body"), top, open_t, |ui| body(ui, &reductions));
             }
-            header
+            header.inner
         });
 
     let rect = shown.response.rect;
@@ -298,6 +303,7 @@ mod tests {
         ctx: egui::Context,
         arrow: Cell<Rect>,
         power: Cell<Rect>,
+        row: Cell<Rect>,
         body_drawn: Cell<bool>,
         shown_reductions: RefCell<Vec<f32>>,
     }
@@ -308,6 +314,7 @@ mod tests {
                 ctx: egui::Context::default(),
                 arrow: Cell::new(Rect::NOTHING),
                 power: Cell::new(Rect::NOTHING),
+                row: Cell::new(Rect::NOTHING),
                 body_drawn: Cell::new(false),
                 shown_reductions: RefCell::new(Vec::new()),
             }
@@ -328,7 +335,19 @@ mod tests {
                 });
                 self.arrow.set(header.arrow.rect);
                 self.power.set(header.power.rect);
+                self.row.set(header.rect);
             });
+        }
+
+        /// Row heights over the frames after toggling the fold, until it settles.
+        fn fold_heights(&self, section: &Section) -> Vec<f32> {
+            section.open.store(!section.open.load(Ordering::Relaxed), Ordering::Relaxed);
+            (0..30)
+                .map(|_| {
+                    self.frame(section, vec![]);
+                    self.row.get().height()
+                })
+                .collect()
         }
 
         fn click(&self, section: &Section, at: Pos2) {
@@ -493,6 +512,26 @@ mod tests {
         section.open.store(false, Ordering::Relaxed);
         h.settle(&section);
         assert!(!h.body_drawn.get(), "folded rows draw no body");
+    }
+
+    #[test]
+    fn folding_eases_into_its_end_height_without_a_jump() {
+        let h = Harness::new();
+        let section = compressor_like();
+        h.settle(&section);
+        let open_height = h.row.get().height();
+
+        let closing = h.fold_heights(&section);
+        let shut = *closing.last().unwrap();
+        assert!(shut < open_height - 40.0, "the row really folds");
+        assert!(closing.windows(2).all(|w| w[1] <= w[0] + 0.01), "only ever shrinks: {closing:?}");
+        let last_move = closing.iter().rev().find(|&&x| (x - shut).abs() > 0.01).unwrap();
+        assert!(last_move - shut < 3.0, "last step is eased, not a jump: {closing:?}");
+
+        let opening = h.fold_heights(&section);
+        assert!((opening.last().unwrap() - open_height).abs() < 0.01, "unfolds back to full height");
+        assert!(opening.windows(2).all(|w| w[1] >= w[0] - 0.01), "only ever grows: {opening:?}");
+        assert!(opening[0] - shut < 3.0, "first step is eased, not a jump: {opening:?}");
     }
 
     #[test]
