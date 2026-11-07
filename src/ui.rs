@@ -3,11 +3,11 @@
 use crate::audio::{self, Devices, Engine};
 use crate::dsp;
 use crate::eq_panel::EqPanel;
-use crate::settings::{Param, Section, Settings};
+use crate::rack::{rack_item, section_body};
+use crate::settings::Settings;
 use crate::setup::{self, Progress};
 use eframe::egui;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -314,86 +314,6 @@ impl App {
     }
 }
 
-/// Gain-reduction bars span 0..this many dB.
-const REDUCTION_RANGE_DB: f32 = 24.0;
-/// Below this the header shows nothing, so it only lights up when the stage is working.
-const REDUCTION_SHOWN_DB: f32 = 0.5;
-
-fn section_ui(ui: &mut egui::Ui, section: &Section, open: bool) {
-    // Read once per redraw: the readings reset when taken.
-    let reductions: Vec<f32> = (0..section.reduction_labels.len())
-        .map(|slot| section.take_reduction(slot))
-        .collect();
-    let worst = reductions.iter().copied().fold(0.0, f32::max);
-
-    let mut title = section.name.to_string();
-    if !section.is_enabled() {
-        title.push_str("  (off)");
-    } else if worst >= REDUCTION_SHOWN_DB {
-        title.push_str(&format!("   ▼ {worst:.1} dB"));
-    }
-    egui::CollapsingHeader::new(title)
-        .id_salt(section.name)
-        .default_open(open)
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let mut on = section.is_enabled();
-                if ui.checkbox(&mut on, "On").changed() {
-                    section.enabled.store(on, Ordering::Relaxed);
-                }
-                if ui.small_button("Reset").clicked() {
-                    section.reset();
-                }
-                if !section.simple.is_empty() {
-                    let mut advanced = section.advanced.load(Ordering::Relaxed);
-                    if ui.checkbox(&mut advanced, "Advanced").changed() {
-                        section.advanced.store(advanced, Ordering::Relaxed);
-                    }
-                }
-            });
-            if !reductions.is_empty() {
-                egui::Grid::new((section.name, "reduction")).num_columns(2).show(ui, |ui| {
-                    for (label, db) in section.reduction_labels.iter().zip(&reductions) {
-                        ui.label(format!("{label} turned down"));
-                        ui.add(
-                            egui::ProgressBar::new(db / REDUCTION_RANGE_DB)
-                                .desired_width(220.0)
-                                .text(format!("{db:.1} dB")),
-                        );
-                        ui.end_row();
-                    }
-                });
-            }
-            ui.add_enabled_ui(section.is_enabled(), |ui| {
-                ui.spacing_mut().slider_width = 220.0;
-                let shown: &[Param] = if section.is_advanced() {
-                    &section.params
-                } else {
-                    &section.simple
-                };
-                if !section.is_advanced() && !section.quick_picks.is_empty() {
-                    ui.horizontal(|ui| {
-                        for (label, value) in &section.quick_picks {
-                            if ui.button(*label).clicked() {
-                                section.simple[0].set(*value);
-                            }
-                        }
-                    });
-                }
-                for p in shown {
-                    let mut v = p.get();
-                    let slider = egui::Slider::new(&mut v, p.min..=p.max)
-                        .text(p.name)
-                        .suffix(format!(" {}", p.unit))
-                        .logarithmic(p.log);
-                    if ui.add(slider).changed() {
-                        p.set(v);
-                    }
-                }
-            });
-        });
-}
-
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if let Some(engine) = &self.engine {
@@ -419,14 +339,14 @@ impl eframe::App for App {
             let running = self.running();
             self.eq_panel.update(&self.settings.meters, running);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let eq = self.settings.section(dsp::EQ_NAME);
-                let deesser = self.settings.section(dsp::DEESSER_NAME);
-                self.eq_panel.ui(ui, &eq, dsp::deesser_frequency_hz(&deesser));
-                ui.separator();
-                // The EQ has its own panel above; everything else is a plain list.
-                let others = self.settings.sections.iter().filter(|s| s.name != dsp::EQ_NAME);
-                for (i, section) in others.enumerate() {
-                    section_ui(ui, section, i < 2);
+                let deesser_hz = dsp::deesser_frequency_hz(&self.settings.section(dsp::DEESSER_NAME));
+                // The rack, in signal order. Only the EQ has a custom body.
+                for section in &self.settings.sections {
+                    if section.name == dsp::EQ_NAME {
+                        rack_item(ui, section, |ui, _| self.eq_panel.ui(ui, section, deesser_hz));
+                    } else {
+                        rack_item(ui, section, |ui, reductions| section_body(ui, section, reductions));
+                    }
                 }
             });
         });

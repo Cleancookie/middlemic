@@ -13,7 +13,7 @@ const HOP: usize = 480;
 const LATENCY_SAMPLES: usize = 4 * HOP;
 
 pub fn section() -> Section {
-    Section::new(NAME, vec![Param::new("Max reduction", "dB", 0.0, 100.0, 100.0)])
+    Section::new(NAME, vec![Param::new("Max reduction", "dB", 0.0, 100.0, 100.0)]).unfolded()
 }
 
 /// DeepFilterNet3 noise suppression. Expects 48 kHz mono, in multiples of 480 samples.

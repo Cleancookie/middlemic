@@ -101,6 +101,8 @@ pub struct Section {
     /// Buttons that set the first simple parameter, e.g. ("Gentle", 25.0).
     pub quick_picks: Vec<(&'static str, f32)>,
     pub advanced: AtomicBool,
+    /// Whether the stage is unfolded in the rack. Saved with the other settings.
+    pub open: AtomicBool,
 }
 
 impl Section {
@@ -114,7 +116,14 @@ impl Section {
             simple: Vec::new(),
             quick_picks: Vec::new(),
             advanced: AtomicBool::new(false),
+            open: AtomicBool::new(false),
         }
+    }
+
+    /// Start unfolded in the rack (stages are folded by default).
+    pub fn unfolded(self) -> Self {
+        self.open.store(true, Relaxed);
+        self
     }
 
     /// Give the stage a Simple mode. It starts in Simple; `params` become the Advanced view.
@@ -279,7 +288,12 @@ impl Settings {
             out.push_str(&format!("{key}={value}\n"));
         }
         for section in &self.sections {
-            out.push_str(&format!("\n[{}]\nenabled={}\n", section.name, section.is_enabled()));
+            out.push_str(&format!(
+                "\n[{}]\nenabled={}\nopen={}\n",
+                section.name,
+                section.is_enabled(),
+                section.open.load(Relaxed)
+            ));
             if !section.simple.is_empty() {
                 out.push_str(&format!("advanced={}\n", section.advanced.load(Relaxed)));
             }
@@ -309,6 +323,11 @@ impl Settings {
                 Some(section) if key == "enabled" => {
                     if let Ok(v) = value.parse() {
                         section.enabled.store(v, Relaxed);
+                    }
+                }
+                Some(section) if key == "open" => {
+                    if let Ok(v) = value.parse() {
+                        section.open.store(v, Relaxed);
                     }
                 }
                 Some(section) if key == "advanced" => {
@@ -429,6 +448,23 @@ mod tests {
         s.read_latest(&mut out);
         let last = (Scope::LEN + 99) as f32;
         assert_eq!(out, [last - 2.0, last - 1.0, last]);
+    }
+
+    #[test]
+    fn fold_state_is_remembered_but_not_touched_by_reset() {
+        let make = || Settings::new(vec![Section::new("EQ", vec![]).unfolded(), Section::new("Gate", vec![])]);
+        let a = make();
+        assert!(a.section("EQ").open.load(Relaxed) && !a.section("Gate").open.load(Relaxed));
+        a.section("EQ").open.store(false, Relaxed);
+        a.section("Gate").open.store(true, Relaxed);
+
+        let b = make();
+        b.apply_text(&a.to_text(&[]));
+        assert!(!b.section("EQ").open.load(Relaxed), "saved fold wins over the default");
+        assert!(b.section("Gate").open.load(Relaxed));
+
+        b.reset();
+        assert!(b.section("Gate").open.load(Relaxed), "Reset is about sound, not layout");
     }
 
     #[test]

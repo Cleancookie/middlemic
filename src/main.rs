@@ -5,6 +5,7 @@ mod audio;
 mod dsp;
 mod eq_panel;
 mod knob;
+mod rack;
 mod settings;
 mod setup;
 mod spectrum;

@@ -19,7 +19,8 @@ Early. Working today:
 - Capture from any recording device, process, play to any playback device (WASAPI, shared mode)
 - Pluggable chain: every stage implements `Processor`, so stages can be swapped, reordered or stacked
 - Stages, in order: DeepFilterNet3 noise removal, mic boost, EQ, de-esser, 3-band compressor, limiter
-- Simple window: device pickers, start/stop, level meters, per-stage on/off and sliders
+- Simple window: device pickers, start/stop, level meters, and the stages as a rack of rows
+  (fold arrow, bypass switch, reset, live gain-reduction readout); fold state is remembered
 - EQ screen in the style of a plugin EQ: response curve over a live spectrum, draggable band
   dots, a row of knobs per band, and a scrolling spectrogram with the de-esser frequency marked
 - Gain-reduction meters on the de-esser and compressor; the compressor has a Simple mode

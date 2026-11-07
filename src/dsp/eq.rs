@@ -70,6 +70,7 @@ pub fn section() -> Section {
             gain("High shelf gain"),
         ],
     )
+    .unfolded()
 }
 
 /// High-pass, low shelf, two peaking bands, high shelf.

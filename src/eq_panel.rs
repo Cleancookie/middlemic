@@ -11,7 +11,6 @@ use egui::{
     Align2, Color32, ColorImage, FontId, Pos2, Rect, Sense, Shape, Stroke, TextureHandle,
     TextureOptions, Ui, pos2, vec2,
 };
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const SAMPLE_RATE: f32 = 48_000.0;
@@ -156,16 +155,7 @@ impl EqPanel {
     }
 
     pub fn ui(&mut self, ui: &mut Ui, section: &Section, deesser_hz: f32) {
-        ui.horizontal(|ui| {
-            let mut on = section.is_enabled();
-            if ui.checkbox(&mut on, "EQ").changed() {
-                section.enabled.store(on, Ordering::Relaxed);
-            }
-            if ui.small_button("Reset").clicked() {
-                section.reset();
-            }
-            ui.weak("grey line: mic in · blue: after the whole chain · drag the dots");
-        });
+        ui.weak("grey line: mic in · blue: after the whole chain · drag the dots");
         self.plot(ui, section);
         knob_row(ui, section);
         self.spectrogram_view(ui, deesser_hz);

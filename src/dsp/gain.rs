@@ -5,7 +5,7 @@ use std::sync::Arc;
 pub const NAME: &str = "Mic boost";
 
 pub fn section() -> Section {
-    Section::new(NAME, vec![Param::new("Boost", "dB", 0.0, 30.0, 0.0)])
+    Section::new(NAME, vec![Param::new("Boost", "dB", 0.0, 30.0, 0.0)]).unfolded()
 }
 
 /// Smoothed gain, so dragging the slider does not click.
