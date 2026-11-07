@@ -306,9 +306,10 @@ impl App {
         });
         if self.running() {
             ui.weak(format!(
-                "DSP load {:.1}% of one core · chain delay about {:.0} ms (plus device buffers)",
+                "DSP load {:.1}% of one core · chain delay about {:.0} ms (plus 50 ms cushion and device buffers) · audio gaps: {}",
                 meters.load() * 100.0,
-                meters.latency_ms()
+                meters.latency_ms(),
+                meters.dropouts()
             ));
         }
     }

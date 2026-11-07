@@ -9,16 +9,25 @@ pub const NAME: &str = "Noise removal";
 
 const SAMPLE_RATE: u32 = 48_000;
 const HOP: usize = 480;
-/// 20 ms STFT window plus 20 ms lookahead. Estimated from the model config, not measured.
-const LATENCY_SAMPLES: usize = 4 * HOP;
+/// Measured by cross-correlating output against input: 1440 samples, 30 ms.
+const LATENCY_SAMPLES: usize = 3 * HOP;
+
+/// With no cap the model mutes soft word endings completely (measured on a real quiet
+/// recording: speech frames turned down by up to 100 dB, which sounds choppy). 18 dB
+/// keeps them while still cutting steady background noise by about 16 dB.
+const DEFAULT_MAX_REDUCTION_DB: f32 = 18.0;
 
 pub fn section() -> Section {
-    Section::new(NAME, vec![Param::new("Max reduction", "dB", 0.0, 100.0, 100.0)]).unfolded()
+    Section::new(
+        NAME,
+        vec![Param::new("Max reduction", "dB", 0.0, 100.0, DEFAULT_MAX_REDUCTION_DB)],
+    )
+    .unfolded()
 }
 
 /// DeepFilterNet3 noise suppression. Expects 48 kHz mono, in multiples of 480 samples.
-/// "Max reduction" caps how much noise is removed; 25-40 dB tends to sound more natural
-/// than full suppression.
+/// "Max reduction" caps how much noise is removed. Raise it for noisier rooms; lower it if
+/// words sound clipped.
 pub struct DeepFilter {
     section: Arc<Section>,
     model: DfTract,

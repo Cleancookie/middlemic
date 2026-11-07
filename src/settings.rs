@@ -215,6 +215,7 @@ pub struct Meters {
     output_peak: AtomicU32,
     load: AtomicU32,
     latency_ms: AtomicU32,
+    dropouts: AtomicU32,
     pub input_scope: Scope,
     pub output_scope: Scope,
 }
@@ -230,6 +231,19 @@ impl Meters {
 
     pub fn set_load(&self, load: f32) {
         self.load.store(load.to_bits(), Relaxed);
+    }
+
+    /// An audible gap: the output ran dry, or audio had to be thrown away to catch up.
+    pub fn record_dropout(&self) {
+        self.dropouts.fetch_add(1, Relaxed);
+    }
+
+    pub fn dropouts(&self) -> u32 {
+        self.dropouts.load(Relaxed)
+    }
+
+    pub fn clear_dropouts(&self) {
+        self.dropouts.store(0, Relaxed);
     }
 
     pub fn set_latency_ms(&self, ms: f32) {

@@ -2,6 +2,7 @@
 //! Fixed 48 kHz, mono in, stereo out, shared mode. Windows resamples via `autoconvert`.
 
 use crate::dsp;
+use crate::playout::{Fill, Playout};
 use crate::settings::Settings;
 use anyhow::{Result, anyhow};
 use ringbuf::{
@@ -23,6 +24,9 @@ const FRAME: usize = SAMPLE_RATE / 100;
 const RING_FRAMES: usize = 20;
 /// If the DSP backlog exceeds this, clocks have drifted: drop old audio to bound latency.
 const MAX_BACKLOG_FRAMES: usize = 10;
+/// The output waits for this much audio (50 ms of stereo) before it starts, and again after
+/// running dry, so uneven delivery is absorbed instead of heard as gaps.
+const PLAYOUT_CUSHION_SAMPLES: usize = 5 * FRAME * 2;
 
 pub struct Devices {
     pub inputs: Vec<String>,
@@ -123,17 +127,15 @@ impl Engine {
             Ok(())
         };
 
-        let r = running.clone();
-        spawn("capture", Box::new(move || capture_loop(input, cap_prod, r)))?;
-        let r = running.clone();
-        spawn(
-            "dsp",
-            Box::new(move || dsp_loop(cap_cons, out_prod, settings, r)),
-        )?;
+        settings.meters.clear_dropouts();
+        let (r, s) = (running.clone(), settings.clone());
+        spawn("capture", Box::new(move || capture_loop(input, cap_prod, s, r)))?;
+        let (r, s) = (running.clone(), settings.clone());
+        spawn("dsp", Box::new(move || dsp_loop(cap_cons, out_prod, s, r)))?;
         let r = running.clone();
         spawn(
             "render",
-            Box::new(move || render_loop(Some(output), out_cons, r)),
+            Box::new(move || render_loop(Some(output), out_cons, settings, r)),
         )?;
         Ok(engine)
     }
@@ -164,6 +166,7 @@ impl Drop for Engine {
 fn capture_loop(
     needle: Option<String>,
     mut ring: impl Producer<Item = f32>,
+    settings: Arc<Settings>,
     running: Arc<AtomicBool>,
 ) -> Result<()> {
     initialize_mta().ok()?;
@@ -201,7 +204,9 @@ fn capture_loop(
             ];
             samples.push(f32::from_le_bytes(b));
         }
-        ring.push_slice(&samples);
+        if ring.push_slice(&samples) < samples.len() {
+            settings.meters.record_dropout(); // the processing thread fell behind; audio lost
+        }
         event.wait_for_event(1000)?;
     }
     client.stop_stream()?;
@@ -226,6 +231,7 @@ fn dsp_loop(
     while running.load(Ordering::Relaxed) {
         if input.occupied_len() > MAX_BACKLOG_FRAMES * FRAME {
             input.skip(input.occupied_len() - 2 * FRAME);
+            meters.record_dropout(); // clocks drifted apart; old audio dropped to catch up
         }
         if input.occupied_len() >= FRAME && output.vacant_len() >= FRAME * 2 {
             input.pop_slice(&mut mono);
@@ -254,6 +260,7 @@ fn dsp_loop(
 fn render_loop(
     needle: Option<String>,
     mut ring: impl Consumer<Item = f32>,
+    settings: Arc<Settings>,
     running: Arc<AtomicBool>,
 ) -> Result<()> {
     initialize_mta().ok()?;
@@ -278,10 +285,13 @@ fn render_loop(
 
     let mut samples: Vec<f32> = Vec::new();
     let mut bytes: Vec<u8> = Vec::new();
+    let mut playout = Playout::new(PLAYOUT_CUSHION_SAMPLES);
     let mut write = |frames: usize| -> Result<()> {
         samples.clear();
         samples.resize(frames * 2, 0.0);
-        ring.pop_slice(&mut samples); // any shortfall stays silent
+        if playout.fill(&mut ring, &mut samples) == Fill::RanDry {
+            settings.meters.record_dropout();
+        }
         bytes.clear();
         bytes.extend(samples.iter().flat_map(|s| s.to_le_bytes()));
         render.write_to_device(&bytes, None)?;

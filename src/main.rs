@@ -5,6 +5,9 @@ mod audio;
 mod dsp;
 mod eq_panel;
 mod knob;
+#[cfg(test)]
+mod offline;
+mod playout;
 mod rack;
 mod settings;
 mod setup;
