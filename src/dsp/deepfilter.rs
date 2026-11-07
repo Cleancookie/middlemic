@@ -26,10 +26,10 @@ pub fn section() -> Section {
         )],
     )
     .help(
-        "An AI model (DeepFilterNet) that removes steady background noise such as fans, hum and keyboard clatter. \
-         Adds about 30 ms of delay.",
+        "An older AI noise remover (DeepFilterNet), built in with no download. Lighter on CPU and adds about 30 ms \
+         of delay, but cuts soft speech more than DPDFNet. Off by default.",
     )
-    .unfolded()
+    .off_by_default()
 }
 
 /// DeepFilterNet3 noise suppression. Expects 48 kHz mono, in multiples of 480 samples.

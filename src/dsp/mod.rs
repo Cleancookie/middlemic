@@ -34,8 +34,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 /// Every kind of stage with a maker for its controls, in the default rack's order.
 const KINDS: [(&str, fn() -> Section); 9] = [
     (echo::NAME, echo::section),
-    (deepfilter::NAME, deepfilter::section),
     (dpdfnet::LIGHT.name, || dpdfnet::section(dpdfnet::LIGHT)),
+    (deepfilter::NAME, deepfilter::section),
     (rnnoise::NAME, rnnoise::section),
     (gain::NAME, gain::section),
     (eq::NAME, eq::section),

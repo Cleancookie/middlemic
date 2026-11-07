@@ -800,8 +800,8 @@ mod tests {
             names,
             [
                 "Echo cancellation",
-                "Noise removal",
                 "Noise removal (DPDFNet)",
+                "Noise removal",
                 "Noise removal (RNNoise)",
                 "Mic boost",
                 "EQ",

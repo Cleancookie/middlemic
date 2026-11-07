@@ -54,7 +54,7 @@ pub fn model_installed(variant: &Variant) -> bool {
     find_model(variant.file).is_ok()
 }
 
-/// Off by default: an alternative to the stock "Noise removal", for trying side by side.
+/// The default noise removal: it kept speech best of the three on Alex's recording.
 pub fn section(variant: Variant) -> Section {
     Section::new(
         variant.name,
@@ -64,10 +64,10 @@ pub fn section(variant: Variant) -> Section {
         )],
     )
     .help(
-        "An alternative AI noise remover (DPDFNet) to try side by side with the standard one. \
-         Needs a one-time model download, adds about 50 ms of delay and uses about 40% of a CPU core. Off by default.",
+        "AI noise removal (DPDFNet) that removes fans, hum, keyboard and room noise while keeping your voice clear. \
+         Needs a one-time model download, adds about 50 ms of delay and uses about 40% of a CPU core.",
     )
-    .off_by_default()
+    .unfolded()
 }
 
 /// Where model files are looked for, best first.
@@ -382,9 +382,9 @@ mod tests {
     }
 
     #[test]
-    fn starts_off_with_the_stock_reduction_cap() {
+    fn starts_on_with_the_stock_reduction_cap() {
         let s = section(LIGHT);
-        assert!(!s.is_enabled());
+        assert!(s.is_enabled(), "DPDFNet is the default noise removal");
         assert_eq!(s.get(0), DEFAULT_MAX_REDUCTION_DB);
     }
 }
