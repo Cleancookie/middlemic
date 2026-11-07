@@ -78,7 +78,13 @@ fn model_row(ui: &mut egui::Ui, download: &mut Option<Arc<Mutex<Progress>>>) {
                 ui.colored_label(egui::Color32::LIGHT_RED, why);
             }
             let label = if previous.is_some() { "Try again" } else { "Download model" };
-            if ui.button(label).clicked() {
+            let button = ui.button(label);
+            theme::help_tooltip(
+                button.clone(),
+                label,
+                "Downloads the AI model this stage needs (checked against a known checksum before use). The stage starts working as soon as the file lands.",
+            );
+            if button.clicked() {
                 *download = Some(setup::spawn_model_download(
                     model.url,
                     dsp::model_download_dir(),
@@ -260,7 +266,7 @@ impl App {
     fn preset_picker(&mut self, ui: &mut egui::Ui) {
         let mut chosen = None;
         ui.allocate_ui(vec2(PRESET_WIDTH, ui.spacing().interact_size.y), |ui| {
-            egui::ComboBox::from_id_salt("preset")
+            let picker = egui::ComboBox::from_id_salt("preset")
                 .width(PRESET_WIDTH)
                 .truncate()
                 .selected_text(self.presets.label(&self.settings))
@@ -280,8 +286,12 @@ impl App {
                         }
                     }
                 })
-                .response
-                .on_hover_text("Preset: the whole rack. A dot means it has changed since it was loaded.");
+                .response;
+            theme::help_tooltip(
+                picker,
+                "Preset",
+                "A saved set-up of the whole rack. Pick one to load it; you can keep switching while running. A dot after the name means you have changed it since loading.",
+            );
         });
         if let Some(name) = chosen {
             let result = self.presets.load(&self.settings, &name);
@@ -293,17 +303,21 @@ impl App {
     fn preset_menu(&mut self, ui: &mut egui::Ui) {
         let editable = self.presets.is_user();
         let (mut save, mut save_as, mut rename, mut delete) = (false, false, false, false);
-        ui.menu_button("…", |ui| {
-            save = ui.add_enabled(editable, egui::Button::new("Save")).clicked();
-            save_as = ui.button("Save as…").clicked();
-            rename = ui.add_enabled(editable, egui::Button::new("Rename…")).clicked();
-            delete = ui.add_enabled(editable, egui::Button::new("Delete…")).clicked();
+        let menu = ui.menu_button("…", |ui| {
+            let item = |ui: &mut egui::Ui, enabled: bool, label: &str, help: &str| {
+                let response = ui.add_enabled(enabled, egui::Button::new(label));
+                theme::help_tooltip(response.clone(), label.trim_end_matches('…'), help);
+                response.clicked()
+            };
+            save = item(ui, editable, "Save", "Writes your current rack settings over the loaded preset. Only your own presets can be overwritten, not the built-in ones.");
+            save_as = item(ui, true, "Save as…", "Saves the current rack as a new preset under a name you choose. Use this to keep a copy of a built-in preset you tweaked.");
+            rename = item(ui, editable, "Rename…", "Gives the loaded preset a new name. Only your own presets can be renamed.");
+            delete = item(ui, editable, "Delete…", "Removes the loaded preset from your list after you confirm. The rack stays as it is.");
             if save || save_as || rename || delete {
                 ui.close();
             }
-        })
-        .response
-        .on_hover_text("Preset actions");
+        });
+        theme::help_tooltip(menu.response, "Preset actions", "Save, rename or delete presets.");
         let dialog = |renaming, name| PresetDialog::Name(NameDialog { renaming, name, error: String::new() });
         if save {
             let result = self.presets.save(&self.settings);
@@ -390,7 +404,7 @@ impl App {
     fn input_picker(&mut self, ui: &mut egui::Ui, width: f32) {
         // ComboBox::width is only a minimum; the box truncates to the space it is given.
         ui.allocate_ui(vec2(width, ui.spacing().interact_size.y), |ui| {
-            egui::ComboBox::from_id_salt("input")
+            let picker = egui::ComboBox::from_id_salt("input")
                 .width(width)
                 .truncate()
                 .selected_text(&self.input)
@@ -400,14 +414,19 @@ impl App {
                         ui.selectable_value(&mut self.input, name.clone(), name);
                     }
                 })
-                .response
-                .on_hover_text(format!("Input: {}", self.input));
+                .response;
+            theme::help_tooltip_with_hint(
+                picker,
+                "Input device",
+                "The microphone to clean up, usually your headset mic. System default follows whatever Windows uses. Locked while running.",
+                &self.input,
+            );
         });
     }
 
     fn output_picker(&mut self, ui: &mut egui::Ui, width: f32) {
         ui.allocate_ui(vec2(width, ui.spacing().interact_size.y), |ui| {
-            egui::ComboBox::from_id_salt("output")
+            let picker = egui::ComboBox::from_id_salt("output")
                 .width(width)
                 .truncate()
                 .selected_text(if self.output.is_empty() { "Choose output…" } else { &self.output })
@@ -416,25 +435,40 @@ impl App {
                         ui.selectable_value(&mut self.output, name.clone(), name);
                     }
                 })
-                .response
-                .on_hover_text(format!("Output: {} (usually CABLE Input)", self.output));
+                .response;
+            theme::help_tooltip_with_hint(
+                picker,
+                "Output device",
+                "Where the cleaned mic goes. Choose CABLE Input (VB-CABLE), then pick CABLE Output as your microphone in Discord or your game. Locked while running.",
+                &self.output,
+            );
         });
     }
 
     fn refresh_button(&mut self, ui: &mut egui::Ui) {
-        if refresh_icon(ui).on_hover_text("Refresh devices").clicked() {
+        let refresh = refresh_icon(ui);
+        if refresh.clicked() {
             if let Ok(devices) = audio::list_devices() {
                 self.devices = devices;
             }
         }
+        theme::help_tooltip(refresh, "Refresh devices", "Looks for microphones and outputs again. Use it after plugging in a headset or installing VB-CABLE.");
     }
 
     /// levels | CPU | start, with start pinned to the right edge.
     fn readouts(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 3.0;
-            level_bar(ui, self.in_level).on_hover_text("Input level");
-            level_bar(ui, self.out_level).on_hover_text("Output level");
+            theme::help_tooltip(
+                level_bar(ui, self.in_level),
+                "Input level",
+                "How loud your mic is before processing. Aim for it to move well into the bar when you talk without sitting at the very end.",
+            );
+            theme::help_tooltip(
+                level_bar(ui, self.out_level),
+                "Output level",
+                "How loud your voice is after the whole rack, as Discord and games hear it. It should look steadier than the input level.",
+            );
         });
         ui.separator();
         let cpu = self.cpu.percent();
@@ -450,17 +484,29 @@ impl App {
         } else {
             "Whole app, as a share of all cores (as Task Manager shows it)".to_string()
         };
-        ui.label(format!("CPU {cpu:.1}%")).on_hover_text(detail);
+        theme::help_tooltip_with_hint(
+            ui.label(format!("CPU {cpu:.1}%")),
+            "CPU use",
+            "How hard your PC is working for middlemic. If it is high or you hear gaps, turn off heavy stages such as the AI noise removal.",
+            &detail,
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if self.running() {
-                if ui.button("Stop").clicked() {
+                let stop = ui.button("Stop");
+                if stop.clicked() {
                     self.stop();
                 }
-            } else if ui
-                .add_enabled(!self.output.is_empty(), egui::Button::new("Start"))
-                .clicked()
-            {
-                self.start();
+                theme::help_tooltip(stop, "Stop", "Stops processing. Discord and games will hear nothing from the cable until you Start again.");
+            } else {
+                let start = ui.add_enabled(!self.output.is_empty(), egui::Button::new("Start"));
+                if start.clicked() {
+                    self.start();
+                }
+                theme::help_tooltip(
+                    start,
+                    "Start",
+                    "Begins cleaning your mic and sending it to the output. Choose an output device first.",
+                );
             }
         });
     }
@@ -469,13 +515,21 @@ impl App {
     fn cable_banner(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.colored_label(theme::WARN, "Discord and games need a virtual cable to hear middlemic.");
-            if ui.add_enabled(!self.running(), egui::Button::new("Set up VB-CABLE…")).clicked() {
+            let setup = ui.add_enabled(!self.running(), egui::Button::new("Set up VB-CABLE…"));
+            if setup.clicked() {
                 self.setup = SetupState::Confirm;
             }
+            theme::help_tooltip(
+                setup,
+                "Set up VB-CABLE",
+                "Installs VB-CABLE, a free virtual audio cable. middlemic plays your cleaned mic into it, and Discord or your game listens to it as a microphone. Windows asks for permission. Not available while running.",
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if cross_button(ui).on_hover_text("Hide until next launch").clicked() {
+                let hide = cross_button(ui);
+                if hide.clicked() {
                     self.banner_dismissed = true;
                 }
+                theme::help_tooltip(hide, "Hide", "Hides this message until you next start the app.");
             });
         });
     }
@@ -658,9 +712,15 @@ impl eframe::App for App {
                     }
                 });
                 ui.add_space(8.0);
-                if ui.small_button("Reset all stages").clicked() {
+                let reset_all = ui.small_button("Reset all stages");
+                if reset_all.clicked() {
                     self.settings.reset();
                 }
+                theme::help_tooltip(
+                    reset_all,
+                    "Reset all stages",
+                    "Puts every control in every stage back to its starting value. The stages and their order stay as they are.",
+                );
             });
         });
 

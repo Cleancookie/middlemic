@@ -274,10 +274,12 @@ impl EqPanel {
                 FontId::proportional(10.0),
                 Color32::BLACK,
             );
-            response.on_hover_text(match gain {
-                Some(g) => format!("{}: {} at {}", band.label, g.display(), freq.display()),
-                None => format!("{}: {}", band.label, freq.display()),
-            });
+            let now = match gain {
+                Some(g) => format!("{} at {}", g.display(), freq.display()),
+                None => freq.display(),
+            };
+            let hint = format!("Now {now}. Drag to move, double-click resets");
+            theme::help_tooltip_with_hint(response, band.label, freq.help, &hint);
         }
     }
 

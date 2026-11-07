@@ -57,9 +57,11 @@ fn grip_handle(ui: &mut Ui) -> Response {
             Stroke::new(1.5, color),
         );
     }
-    response
-        .on_hover_cursor(CursorIcon::Grab)
-        .on_hover_text("Drag to reorder")
+    theme::help_tooltip(
+        response.on_hover_cursor(CursorIcon::Grab),
+        "Reorder",
+        "Drag this handle up or down to change the order the stages run in. Each stage hears the output of the one above it.",
+    )
 }
 
 /// A chevron that turns from pointing right to pointing down as `openness` goes 0 to 1.
@@ -69,7 +71,7 @@ fn fold_arrow(ui: &mut Ui, openness: f32) -> Response {
     let turn = egui::emath::Rot2::from_angle(openness * FRAC_PI_2);
     let points = [vec2(-2.5, -4.0), vec2(2.0, 0.0), vec2(-2.5, 4.0)].map(|p| rect.center() + turn * p);
     ui.painter().add(Shape::line(points.to_vec(), Stroke::new(1.8, color)));
-    response.on_hover_text("Fold or unfold")
+    theme::help_tooltip(response, "Fold or unfold", "Shows or hides this stage's controls. Folding does not turn the stage off.")
 }
 
 /// The bypass switch: a ring that fills with a dot of the accent colour when the stage is on.
@@ -78,7 +80,11 @@ fn power_dot(ui: &mut Ui, on_t: f32, accent: Color32) -> Response {
     let ring = theme::OUTLINE_OFF.lerp_to_gamma(accent, on_t);
     ui.painter().circle_stroke(rect.center(), 6.0, Stroke::new(1.5, ring));
     ui.painter().circle_filled(rect.center(), 3.5 * on_t, accent);
-    response.on_hover_text("On / bypass")
+    theme::help_tooltip(
+        response,
+        "Power",
+        "Lit means the stage is on. Click to bypass it: the sound passes through untouched and it adds no delay. Handy for comparing with and without.",
+    )
 }
 
 /// A small button with a painted ✕; egui's default fonts have no such glyph.
@@ -175,20 +181,37 @@ fn item_row(ui: &mut Ui, item: &Item, accent: Color32, body: impl FnOnce(&mut Ui
                         .extra_letter_spacing(1.0)
                         .color(color);
                     let title = ui.add(egui::Label::new(name).sense(Sense::click()));
+                    theme::help_tooltip_with_hint(title.clone(), &item.name, section.help, "Click to fold or unfold");
                     if arrow.clicked() || title.clicked() {
                         section.open.store(!open, Ordering::Relaxed);
                     }
 
                     let remove = ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let remove = cross_button(ui).on_hover_text("Remove");
-                        if ui.small_button("Reset").clicked() {
+                        let remove = theme::help_tooltip(
+                            cross_button(ui),
+                            "Remove",
+                            "Takes this stage out of the rack. An Undo link appears for a few seconds.",
+                        );
+                        let reset = ui.small_button("Reset");
+                        if reset.clicked() {
                             section.reset();
                         }
+                        theme::help_tooltip(
+                            reset,
+                            "Reset stage",
+                            "Puts every control of this stage back to its starting value, including its on/off switch and Simple mode.",
+                        );
                         if !section.simple.is_empty() {
                             let mut advanced = section.advanced.load(Ordering::Relaxed);
-                            if ui.checkbox(&mut advanced, "Advanced").changed() {
+                            let toggle = ui.checkbox(&mut advanced, "Advanced");
+                            if toggle.changed() {
                                 section.advanced.store(advanced, Ordering::Relaxed);
                             }
+                            theme::help_tooltip(
+                                toggle,
+                                "Advanced",
+                                "Off: a single simple control does the job. On: every setting is yours to tune.",
+                            );
                         }
                         if on && worst >= REDUCTION_SHOWN_DB {
                             ui.colored_label(theme::WARN, format!("-{worst:.1} dB"));
@@ -230,12 +253,20 @@ fn add_row(ui: &mut Ui) -> (Rect, Option<&'static str>) {
     let mut picked = None;
     egui::Popup::menu(&response).show(|ui| {
         for kind in crate::dsp::kinds() {
-            if ui.button(kind).clicked() {
+            let entry = ui.button(kind);
+            if entry.clicked() {
                 picked = Some(kind);
+            }
+            if let Some(section) = crate::dsp::new_section(kind) {
+                theme::help_tooltip(entry, kind, section.help);
             }
         }
     });
-    response.on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Add a stage");
+    theme::help_tooltip(
+        response.on_hover_cursor(CursorIcon::PointingHand),
+        "Add a stage",
+        "Adds another effect to the bottom of the rack. You can have more than one of the same kind, and drag it to where you want it.",
+    );
     (rect, picked)
 }
 
@@ -369,22 +400,30 @@ pub fn section_body(ui: &mut Ui, section: &Section, reductions: &[f32]) {
         };
         if !section.is_advanced() && !section.quick_picks.is_empty() {
             ui.horizontal(|ui| {
-                for (label, value) in &section.quick_picks {
-                    if ui.button(*label).clicked() {
+                for (label, value, help) in &section.quick_picks {
+                    let pick = ui.button(*label);
+                    if pick.clicked() {
                         section.simple[0].set(*value);
                     }
+                    theme::help_tooltip(pick, label, help);
                 }
             });
         }
         for p in shown {
             let mut v = p.get();
-            let slider = egui::Slider::new(&mut v, p.min..=p.max)
-                .text(p.name)
-                .suffix(format!(" {}", p.unit))
-                .logarithmic(p.log);
-            if ui.add(slider).changed() {
-                p.set(v);
-            }
+            // The label is drawn here rather than by `Slider::text` so it can carry the tooltip too.
+            ui.horizontal(|ui| {
+                let slider = egui::Slider::new(&mut v, p.min..=p.max)
+                    .suffix(format!(" {}", p.unit))
+                    .logarithmic(p.log);
+                let response = ui.add(slider);
+                if response.changed() {
+                    p.set(v);
+                }
+                theme::param_tooltip(response, p, "");
+                let name = ui.add(egui::Label::new(p.name).wrap_mode(egui::TextWrapMode::Extend));
+                theme::param_tooltip(name, p, "");
+            });
         }
     });
 }

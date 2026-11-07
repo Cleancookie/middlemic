@@ -19,6 +19,16 @@ const MAX_REDUCTION_DB: f32 = 60.0;
 pub const STRIPS: [&str; 4] = ["Low", "Mid", "High", "Master"];
 pub const MASTER: usize = 3;
 
+/// What each strip is for, one line. Also appended to the strips' threshold tooltips.
+macro_rules! role {
+    ("Low") => { "Low band: rumble, desk thumps, plosives (p and b pops) and boom." };
+    ("Mid") => { "Mid band: the body of the voice, where most words live." };
+    ("High") => { "High band: sibilance (harsh s sounds), hiss and air." };
+    ("Master") => { "Master: the whole voice after the three bands are added back together." };
+}
+pub const BAND_HELP: [&str; 4] = [role!("Low"), role!("Mid"), role!("High"), role!("Master")];
+pub const BAND_TITLES: [&str; 4] = ["Low band", "Mid band", "High band", "Master compressor"];
+
 /// Where each control sits within a strip. The master stops before the switches.
 pub mod field {
     pub const INPUT: usize = 0;
@@ -97,7 +107,7 @@ pub fn section() -> Section {
         ])
         .with_simple(
             vec![Param::new("Amount", "%", 0.0, 100.0, 50.0)],
-            &[("Gentle", 25.0), ("Voice", 50.0), ("Strong", 80.0)],
+            &[("Gentle", 25.0, ""), ("Voice", 50.0, ""), ("Strong", 80.0, "")],
         )
 }
 

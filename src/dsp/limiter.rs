@@ -7,7 +7,17 @@ pub const NAME: &str = "Limiter";
 const RELEASE_MS: f32 = 80.0;
 
 pub fn section() -> Section {
-    Section::new(NAME, vec![Param::new("Ceiling", "dB", -12.0, 0.0, -1.0)])
+    Section::new(
+        NAME,
+        vec![Param::new("Ceiling", "dB", -12.0, 0.0, -1.0).help(
+            "The loudest your voice is allowed to get, in dB (decibels) below the digital maximum of 0. \
+             Start at -1. Try -3 if shouts still crackle or clip in Discord.",
+        )],
+    )
+    .help(
+        "A safety stop for sudden loud peaks, so a shout or a mic bump never clips. \
+         Reacts instantly and recovers over about 80 ms. Keep it as the last stage.",
+    )
 }
 
 /// Safety limiter: instant attack, smooth release. Keeps boosted mics from clipping.

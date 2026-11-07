@@ -25,6 +25,8 @@ pub struct Param {
     pub max: f32,
     pub default: f32,
     pub log: bool,
+    /// Plain-language tooltip body: what it does and where to start. Empty shows only the name.
+    pub help: &'static str,
     value: AtomicU32,
 }
 
@@ -37,8 +39,14 @@ impl Param {
             max,
             default,
             log: false,
+            help: "",
             value: AtomicU32::new(default.to_bits()),
         }
+    }
+
+    pub fn help(mut self, help: &'static str) -> Self {
+        self.help = help;
+        self
     }
 
     /// Slider moves logarithmically (frequencies).
@@ -117,8 +125,10 @@ pub struct Section {
     /// Few-dial alternative to `params`, for stages with a Simple mode. The stage derives
     /// its settings from these until `advanced` is switched on.
     pub simple: Vec<Param>,
-    /// Buttons that set the first simple parameter, e.g. ("Gentle", 25.0).
-    pub quick_picks: Vec<(&'static str, f32)>,
+    /// Buttons that set the first simple parameter, with their tooltip, e.g. ("Gentle", 25.0, "...").
+    pub quick_picks: Vec<(&'static str, f32, &'static str)>,
+    /// One line on what the stage is for, shown in the + menu and on the row's name.
+    pub help: &'static str,
     pub advanced: AtomicBool,
     /// Whether the stage is unfolded in the rack. Saved with the other settings.
     pub open: AtomicBool,
@@ -139,6 +149,7 @@ impl Section {
             renamed: Vec::new(),
             simple: Vec::new(),
             quick_picks: Vec::new(),
+            help: "",
             advanced: AtomicBool::new(false),
             open: AtomicBool::new(false),
             status: std::sync::Mutex::new(String::new()),
@@ -175,9 +186,14 @@ impl Section {
     }
 
     /// Give the stage a Simple mode. It starts in Simple; `params` become the Advanced view.
-    pub fn with_simple(mut self, simple: Vec<Param>, quick_picks: &[(&'static str, f32)]) -> Self {
+    pub fn with_simple(mut self, simple: Vec<Param>, quick_picks: &[(&'static str, f32, &'static str)]) -> Self {
         self.simple = simple;
         self.quick_picks = quick_picks.to_vec();
+        self
+    }
+
+    pub fn help(mut self, help: &'static str) -> Self {
+        self.help = help;
         self
     }
 

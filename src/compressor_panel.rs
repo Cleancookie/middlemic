@@ -2,7 +2,7 @@
 //! crossovers over the output spectrum, MASTER / LOW / MID / HIGH tabs, and for the open tab
 //! its level meters, knobs, switches and transfer curve.
 
-use crate::dsp::multiband::{HIGH_XOVER, LOOKAHEAD, LOW_XOVER, MASTER, curve, field, param};
+use crate::dsp::multiband::{BAND_HELP, BAND_TITLES, HIGH_XOVER, LOOKAHEAD, LOW_XOVER, MASTER, curve, field, param};
 use crate::knob::knob;
 use crate::rack::{once_per_frame, section_body};
 use crate::settings::{Param, Section};
@@ -13,6 +13,10 @@ use egui::{Align2, Color32, CursorIcon, FontId, Id, Pos2, Rect, Sense, Shape, St
 /// Strips in tab order.
 const TABS: [usize; 4] = [MASTER, 0, 1, 2];
 const TAB_LABELS: [&str; 4] = ["MASTER", "LOW", "MID", "HIGH"];
+const DETECT_TIPS: [(&str, &str); 2] = [
+    ("Peak detection", "Reacts to the loudest instant of each sound, so quick spikes such as a shout or a click are caught. Can sound grabby."),
+    ("RMS detection", "Follows the average loudness over about 10 ms, closer to how you hear it. Smoother on voice; a good place to start."),
+];
 /// Graph height as a share of the width, clamped (points).
 const GRAPH_HEIGHT: (f32, f32, f32) = (0.2, 90.0, 150.0);
 const MIN_WIDTH: f32 = 200.0;
@@ -81,7 +85,8 @@ pub fn ui(ui: &mut Ui, section: &Section, reductions: &[f32], spectrum: &[f32]) 
         graph = band_graph(ui, section, &reduction, spectrum, &mut tab);
         let colors = TABS.map(strip_color);
         let open = TABS.iter().position(|&s| s == tab).unwrap_or(0);
-        if let Some(i) = segmented(ui, ui.make_persistent_id("tabs"), &TAB_LABELS, &colors, open) {
+        let tips = TABS.map(|strip| (BAND_TITLES[strip], BAND_HELP[strip]));
+        if let Some(i) = segmented(ui, ui.make_persistent_id("tabs"), &TAB_LABELS, &colors, open, &tips) {
             tab = TABS[i];
         }
         ui.add_space(4.0);
@@ -137,8 +142,12 @@ fn band_graph(ui: &mut Ui, section: &Section, reduction: &impl Fn(usize) -> f32,
             painter.text(bar.right_top() + vec2(4.0, 0.0), Align2::LEFT_TOP, format!("-{db:.1}"), FontId::proportional(10.0), color);
         }
     }
+    let band_at = |x: f32| if x < edges[1] { 0 } else if x < edges[2] { 1 } else { 2 };
     if let Some(x) = response.interact_pointer_pos().filter(|_| response.clicked()).map(|p| p.x) {
-        *tab = if x < edges[1] { 0 } else if x < edges[2] { 1 } else { 2 };
+        *tab = band_at(x);
+    }
+    if let Some(band) = response.hover_pos().map(|p| band_at(p.x)) {
+        theme::help_tooltip_with_hint(response, BAND_TITLES[band], BAND_HELP[band], "Click to open its controls. The bar shows how much it is turned down.");
     }
 
     for (handle, index) in [LOW_XOVER, HIGH_XOVER].into_iter().enumerate() {
@@ -162,14 +171,14 @@ fn band_graph(ui: &mut Ui, section: &Section, reduction: &impl Fn(usize) -> f32,
         painter.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(1.5, color));
         let grip = Rect::from_center_size(pos2(x, rect.center().y), vec2(8.0, 24.0));
         painter.rect(grip, 3.0, theme::PANEL, Stroke::new(1.0 + hot, color), StrokeKind::Middle);
-        response.on_hover_text(format!("{}: {}, drag to move, double-click resets", p.name, p.display()));
+        theme::param_tooltip(response, p, &format!("Now {}. Drag to move, double-click resets", p.display()));
     }
     rect
 }
 
 /// A row of pill buttons with one highlight that slides and changes colour between them.
 /// Returns the index clicked, if any.
-fn segmented(ui: &mut Ui, id: Id, labels: &[&str], colors: &[Color32], selected: usize) -> Option<usize> {
+fn segmented(ui: &mut Ui, id: Id, labels: &[&str], colors: &[Color32], selected: usize, tips: &[(&str, &str)]) -> Option<usize> {
     let font = FontId::proportional(11.0);
     let mut clicked = None;
     let cells: Vec<(Rect, f32)> = ui
@@ -185,7 +194,10 @@ fn segmented(ui: &mut Ui, id: Id, labels: &[&str], colors: &[Color32], selected:
                     if response.clicked() {
                         clicked = Some(i);
                     }
-                    (rect, theme::animate(ui.ctx(), id.with(i), i == selected))
+                    if let Some((title, help)) = tips.get(i) {
+                        theme::help_tooltip(response, title, help);
+                    }
+                    (rect,theme::animate(ui.ctx(), id.with(i), i == selected))
                 })
                 .collect()
         })
@@ -215,7 +227,7 @@ fn segmented(ui: &mut Ui, id: Id, labels: &[&str], colors: &[Color32], selected:
 }
 
 /// A small square switch, filled in `color` when on.
-fn switch(ui: &mut Ui, p: &Param, label: &str, color: Color32, tip: &str) {
+fn switch(ui: &mut Ui, p: &Param, label: &str, color: Color32) {
     let (rect, response) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
     if response.clicked() {
         flip(p);
@@ -226,7 +238,7 @@ fn switch(ui: &mut Ui, p: &Param, label: &str, color: Color32, tip: &str) {
     let painter = ui.painter();
     painter.rect(rect, 5.0, color.gamma_multiply(0.9 * t), Stroke::new(1.0, outline), StrokeKind::Inside);
     painter.text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(11.0), theme::TEXT_DIM.lerp_to_gamma(theme::BG, t));
-    response.on_hover_text(tip);
+    theme::param_tooltip(response, p, "");
 }
 
 fn strip_body(ui: &mut Ui, section: &Section, strip: usize, reduction: f32, [input, output]: [f32; 2]) {
@@ -264,14 +276,14 @@ fn strip_body(ui: &mut Ui, section: &Section, strip: usize, reduction: f32, [inp
                 transfer_curve(ui, section, strip, input, reduction, color);
                 ui.horizontal(|ui| {
                     let rms = p(field::RMS);
-                    let picked = segmented(ui, ui.make_persistent_id("detect"), &["PEAK", "RMS"], &[color, color], switch_on(rms) as usize);
+                    let picked = segmented(ui, ui.make_persistent_id("detect"), &["PEAK", "RMS"], &[color, color], switch_on(rms) as usize, &DETECT_TIPS);
                     if let Some(i) = picked {
                         rms.set(i as f32);
                     }
                     if strip != MASTER {
-                        switch(ui, p(field::SOLO), "S", theme::WARN, "Solo: hear only soloed bands");
-                        switch(ui, p(field::MUTE), "M", theme::ERROR, "Mute this band");
-                        switch(ui, p(field::BYPASS), "B", theme::TEXT_DIM, "Bypass: pass this band untouched");
+                        switch(ui, p(field::SOLO), "S", theme::WARN);
+                        switch(ui, p(field::MUTE), "M", theme::ERROR);
+                        switch(ui, p(field::BYPASS), "B", theme::TEXT_DIM);
                     }
                 });
             });

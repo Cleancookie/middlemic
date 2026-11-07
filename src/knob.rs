@@ -16,6 +16,7 @@ const SWEEP: f32 = 1.5 * PI;
 const DRAG_PIXELS: f32 = 160.0;
 const FINE_DRAG_PIXELS: f32 = 800.0;
 const SCROLL_PIXELS: f32 = 1500.0;
+const HINT: &str = "Drag, scroll, shift for fine, double-click resets";
 
 fn angle(norm: f32) -> f32 {
     START + SWEEP * norm
@@ -42,10 +43,13 @@ fn turned(norm: f32, drag_up: f32, scroll_up: f32, fine: bool) -> Option<f32> {
 pub fn knob(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Response {
     ui.vertical(|ui| {
         ui.set_width(WIDTH);
-        ui.vertical_centered(|ui| {
-            let text = egui::RichText::new(label.to_uppercase()).size(9.5).extra_letter_spacing(0.8).color(theme::TEXT_DIM);
-            ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend))
-        });
+        let caption = ui
+            .vertical_centered(|ui| {
+                let text = egui::RichText::new(label.to_uppercase()).size(9.5).extra_letter_spacing(0.8).color(theme::TEXT_DIM);
+                ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend))
+            })
+            .inner;
+        theme::param_tooltip(caption, param, HINT);
         let (rect, response) = ui.allocate_exact_size(vec2(WIDTH, SIZE),Sense::click_and_drag());
         let centre = rect.center();
 
@@ -85,7 +89,7 @@ pub fn knob(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Re
 
         let text = theme::TEXT_DIM.lerp_to_gamma(theme::TEXT, hover);
         ui.vertical_centered(|ui| ui.label(egui::RichText::new(param.display()).size(11.0).color(text)));
-        response.on_hover_text(format!("{}: drag, scroll, shift for fine, double-click resets", param.name))
+        theme::param_tooltip(response, param, HINT)
     })
     .inner
 }
