@@ -9,6 +9,7 @@ mod deepfilter;
 mod deesser;
 mod echo;
 mod eq;
+pub mod feedback;
 mod gain;
 mod limiter;
 pub mod multiband;
@@ -21,6 +22,7 @@ pub use echo::{EchoCancel, Reference};
 pub use deesser::DeEsser;
 #[allow(unused_imports)] // EQ_NAME is used by the Windows-only window.
 pub use eq::{BANDS, Eq, NAME as EQ_NAME, response_db};
+pub use feedback::FeedbackSuppressor;
 pub use gain::Gain;
 pub use limiter::Limiter;
 pub use multiband::Multiband;
@@ -32,7 +34,8 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 /// Every kind of stage with a maker for its controls, in the default rack's order.
-const KINDS: [(&str, fn() -> Section); 9] = [
+const KINDS: [(&str, fn() -> Section); 10] = [
+    (feedback::NAME, feedback::section),
     (echo::NAME, echo::section),
     (dpdfnet::LIGHT.name, || dpdfnet::section(dpdfnet::LIGHT)),
     (deepfilter::NAME, deepfilter::section),
@@ -74,6 +77,7 @@ pub fn deesser_after(items: &[Arc<Item>], id: u64) -> Option<f32> {
 /// speakers, for echo cancellation. Loading a model can take a few hundred milliseconds.
 fn build_stage(section: Arc<Section>, reference: Option<Reference>, sample_rate: u32) -> Result<Box<dyn Processor>> {
     let mut stage: Box<dyn Processor> = match section.name {
+        feedback::NAME => Box::new(FeedbackSuppressor::new(section)),
         echo::NAME => Box::new(EchoCancel::new(section, reference)),
         name if name == dpdfnet::LIGHT.name => Box::new(DpdfNet::new(section, dpdfnet::LIGHT)),
         rnnoise::NAME => Box::new(RnNoise::new(section)),

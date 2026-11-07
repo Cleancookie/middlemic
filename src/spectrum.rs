@@ -51,16 +51,19 @@ impl Analyzer {
     /// Level of each FFT bin in dBFS: a full-scale sine reads about 0 dB.
     /// `samples` must hold `FFT_LEN` values.
     pub fn analyze(&mut self, samples: &[f32]) -> Vec<f32> {
+        self.power(samples).map(|p| (10.0 * p.max(1e-14).log10()).max(FLOOR_DB)).collect()
+    }
+
+    /// Linear power of each FFT bin: a full-scale sine reads about 1. Allocates nothing.
+    pub fn power(&mut self, samples: &[f32]) -> impl Iterator<Item = f32> + '_ {
         for ((slot, s), w) in self.input.iter_mut().zip(samples).zip(&self.window) {
             *slot = s * w;
         }
         self.fft
             .process_with_scratch(&mut self.input, &mut self.output, &mut self.scratch)
             .expect("buffers are sized by the planner");
-        self.output
-            .iter()
-            .map(|c| (20.0 * (c.norm() * self.scale).max(1e-7).log10()).max(FLOOR_DB))
-            .collect()
+        let scale = self.scale * self.scale;
+        self.output.iter().map(move |c| c.norm_sqr() * scale)
     }
 }
 

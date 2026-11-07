@@ -799,6 +799,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "Feedback suppressor",
                 "Echo cancellation",
                 "Noise removal (DPDFNet)",
                 "Noise removal",

@@ -94,6 +94,7 @@ impl Param {
             "Hz" => format!("{v:.0} Hz"),
             "dB" if self.min < 0.0 => format!("{v:+.1} dB"),
             "1:" => format!("1:{v:.1}"),
+            "notches" => format!("{v:.0}"),
             "" => format!("{v:.1}"),
             unit => format!("{v:.1} {unit}"),
         }
@@ -120,6 +121,10 @@ pub struct Section {
     reduction: Vec<AtomicU32>,
     /// Peak levels (linear) the stage reports for its own display, by slot.
     levels: Vec<AtomicU32>,
+    /// Values the stage shows as they are now, such as the Feedback suppressor's notches.
+    readouts: Vec<AtomicU32>,
+    /// Set by the UI to ask the stage to forget what it learned; the stage takes it.
+    clear: AtomicBool,
     /// Names saved by older versions, each with the parameters it now sets.
     renamed: Vec<(&'static str, &'static [&'static str])>,
     /// Few-dial alternative to `params`, for stages with a Simple mode. The stage derives
@@ -146,6 +151,8 @@ impl Section {
             reduction_labels: Vec::new(),
             reduction: Vec::new(),
             levels: Vec::new(),
+            readouts: Vec::new(),
+            clear: AtomicBool::new(false),
             renamed: Vec::new(),
             simple: Vec::new(),
             quick_picks: Vec::new(),
@@ -235,6 +242,28 @@ impl Section {
 
     pub fn level_meters(&self) -> usize {
         self.levels.len()
+    }
+
+    /// Give the stage `count` readouts, all starting at 0.
+    pub fn with_readouts(mut self, count: usize) -> Self {
+        self.readouts = (0..count).map(|_| AtomicU32::new(0)).collect();
+        self
+    }
+
+    pub fn set_readout(&self, slot: usize, value: f32) {
+        self.readouts[slot].store(value.to_bits(), Relaxed);
+    }
+
+    pub fn readout(&self, slot: usize) -> f32 {
+        f32::from_bits(self.readouts[slot].load(Relaxed))
+    }
+
+    pub fn request_clear(&self) {
+        self.clear.store(true, Relaxed);
+    }
+
+    pub fn take_clear_request(&self) -> bool {
+        self.clear.swap(false, Relaxed)
     }
 
     /// Load values saved under `old` names into the parameters that replaced them.
@@ -880,8 +909,9 @@ Low crossover=300
         assert_eq!(extras["device.output"], "CABLE Input (VB-Audio Virtual Cable)");
         assert!(!extras.contains_key("order"));
         let kinds: Vec<_> = s.items().iter().map(|i| i.kind()).collect();
-        assert_eq!(kinds[4..7], ["Mic boost", "De-esser", "EQ"], "saved order kept");
-        assert_eq!(names(&s).len(), 9);
+        assert_eq!(kinds[0], "Feedback suppressor", "a stage the file never knew keeps its place");
+        assert_eq!(kinds[5..8], ["Mic boost", "De-esser", "EQ"], "saved order kept");
+        assert_eq!(names(&s).len(), 10);
 
         assert!(s.section("Echo cancellation").is_enabled());
         let eq = s.section("EQ");

@@ -307,7 +307,7 @@ mod tests {
         let mut later = Presets::new(dir.0.clone(), "Stream: loud?");
         assert_eq!(later.current(), "Stream: loud?", "remembered across launches");
         later.load(&b, "Stream: loud?").unwrap();
-        assert_eq!(b.items().len(), 8);
+        assert_eq!(b.items().len(), 9);
         assert_eq!(param(&b, "Compressor", "Amount"), 41.0);
         assert_eq!(fingerprint(&a.items()), fingerprint(&b.items()));
     }
@@ -341,10 +341,10 @@ mod tests {
         presets.load(&settings, DEFAULT).unwrap();
         let other = fresh();
         other.remove(other.items()[0].id);
-        other.add(crate::dsp::new_section("Echo cancellation").unwrap());
-        other.section("Echo cancellation").open.store(settings.section("Echo cancellation").open.load(Relaxed), Relaxed);
+        other.add(crate::dsp::new_section("Feedback suppressor").unwrap());
+        other.section("Feedback suppressor").open.store(settings.section("Feedback suppressor").open.load(Relaxed), Relaxed);
         assert!(presets.modified(&other), "the stage moved to the end");
-        other.move_item(8, 0);
+        other.move_item(9, 0);
         assert_ne!(other.items()[0].id, settings.items()[0].id);
         assert!(!presets.modified(&other), "same rack, other ids");
     }
