@@ -261,6 +261,8 @@ mod tests {
         assert!((param(&settings, "EQ", "High shelf gain") - 3.45).abs() < 1e-3);
         assert_eq!(param(&settings, "Noise removal (DPDFNet)", "Max reduction"), 67.0);
         assert_eq!(param(&settings, "Compressor", "Amount"), 25.0);
+        assert!((param(&settings, "Compressor", "Low ratio") - 3.4).abs() < 1e-4);
+        assert_eq!(param(&settings, "Compressor", "Master ratio"), 1.0);
         let order: Vec<_> = settings.items().iter().map(|i| i.kind()).collect();
         assert_eq!(order[..3], ["Echo cancellation", "Mic boost", "Noise removal"]);
         assert!(!settings.section("Limiter").is_enabled());
