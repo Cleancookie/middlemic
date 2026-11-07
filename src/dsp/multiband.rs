@@ -142,6 +142,22 @@ struct Strip {
     bypass: bool,
 }
 
+fn curve_with(strip: usize, value: &impl Fn(usize) -> f32) -> Curve {
+    let f = |field| value(param(strip, field));
+    Curve {
+        threshold: f(field::THRESHOLD),
+        ratio: f(field::RATIO),
+        knee: f(field::KNEE),
+        floor: f(field::FLOOR),
+        floor_ratio: f(field::FLOOR_RATIO),
+    }
+}
+
+/// The static curve `strip`'s controls set, as the Advanced view shows it.
+pub fn curve(section: &Section, strip: usize) -> Curve {
+    curve_with(strip, &|i| section.get(i))
+}
+
 impl Strip {
     fn read(strip: usize, value: &impl Fn(usize) -> f32) -> Self {
         let f = |field| value(param(strip, field));
@@ -149,13 +165,7 @@ impl Strip {
         Self {
             input: db_to_gain(f(field::INPUT)),
             output: db_to_gain(f(field::OUTPUT)),
-            curve: Curve {
-                threshold: f(field::THRESHOLD),
-                ratio: f(field::RATIO),
-                knee: f(field::KNEE),
-                floor: f(field::FLOOR),
-                floor_ratio: f(field::FLOOR_RATIO),
-            },
+            curve: curve_with(strip, value),
             attack: f(field::ATTACK),
             hold: f(field::HOLD),
             release: f(field::RELEASE),

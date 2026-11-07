@@ -15,19 +15,23 @@ const REDUCTION_SHOWN_DB: f32 = 0.5;
 const UNDO_SECONDS: f64 = 5.0;
 
 /// Meter readings reset when taken, and egui may run the UI more than once per frame, so
-/// take them once per frame and give every pass the same values.
-fn reductions_this_frame(ui: &Ui, section: &Section) -> Vec<f32> {
+/// `take` them once per frame and give every pass the same values.
+pub fn once_per_frame(ui: &Ui, key: &str, take: impl FnOnce() -> Vec<f32>) -> Vec<f32> {
     let frame = ui.ctx().cumulative_frame_nr();
-    let key = ui.make_persistent_id("reduction-readings");
+    let key = ui.make_persistent_id(key);
     ui.ctx().data_mut(|data| {
         let (taken_in, readings) = data.get_temp_mut_or_insert_with(key, || (u64::MAX, Vec::<f32>::new()));
         if *taken_in != frame {
             *taken_in = frame;
-            *readings = (0..section.reduction_labels.len())
-                .map(|slot| section.take_reduction(slot))
-                .collect();
+            *readings = take();
         }
         readings.clone()
+    })
+}
+
+fn reductions_this_frame(ui: &Ui, section: &Section) -> Vec<f32> {
+    once_per_frame(ui, "reduction-readings", || {
+        (0..section.reduction_labels.len()).map(|slot| section.take_reduction(slot)).collect()
     })
 }
 

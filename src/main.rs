@@ -2,6 +2,7 @@
 
 #[cfg(windows)]
 mod audio;
+mod compressor_panel;
 #[cfg(windows)]
 mod cpu;
 mod dsp;

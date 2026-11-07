@@ -81,9 +81,13 @@ impl Plot {
     }
 
     fn y_level(&self, db: f32) -> f32 {
-        let t = (db - FLOOR_DB) / (SPECTRUM_TOP_DB - FLOOR_DB);
-        self.rect.bottom() - t.clamp(0.0, 1.0) * self.rect.height()
+        self.rect.bottom() - spectrum_height(db) * self.rect.height()
     }
+}
+
+/// 0 at the spectrum floor, 1 at its top.
+fn spectrum_height(db: f32) -> f32 {
+    ((db - FLOOR_DB) / (SPECTRUM_TOP_DB - FLOOR_DB)).clamp(0.0, 1.0)
 }
 
 pub struct EqPanel {
@@ -144,6 +148,11 @@ impl EqPanel {
         let bins = self.analyzer.analyze(&self.samples);
         smooth(&mut self.output_columns, &to_columns(&bins, SAMPLE_RATE, PLOT_POINTS), fall);
         self.push_spectrogram_column(&to_columns(&bins, SAMPLE_RATE, SG_HEIGHT));
+    }
+
+    /// The output spectrum as heights 0..1, in columns evenly spaced along `freq_to_x`.
+    pub fn output_heights(&self) -> impl Iterator<Item = f32> + '_ {
+        self.output_columns.iter().map(|&db| spectrum_height(db))
     }
 
     /// Scroll left by one pixel and draw `rows` (low to high frequency) as the new right edge.

@@ -41,7 +41,8 @@ pub fn knob(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Re
     ui.vertical(|ui| {
         ui.set_width(SIZE + 12.0);
         ui.vertical_centered(|ui| {
-            ui.label(egui::RichText::new(label.to_uppercase()).size(9.5).extra_letter_spacing(0.8).color(theme::TEXT_DIM))
+            let text = egui::RichText::new(label.to_uppercase()).size(9.5).extra_letter_spacing(0.8).color(theme::TEXT_DIM);
+            ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend))
         });
         let (rect, response) = ui.allocate_exact_size(vec2(SIZE + 12.0, SIZE), Sense::click_and_drag());
         let centre = rect.center();

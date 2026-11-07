@@ -1,6 +1,7 @@
 //! Simple egui front end: pick devices, start/stop, adjust each stage.
 
 use crate::audio::{self, Devices, Engine};
+use crate::compressor_panel;
 use crate::cpu::CpuMeter;
 use crate::dsp;
 use crate::eq_panel::EqPanel;
@@ -628,8 +629,9 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             let running = self.running();
             self.eq_panel.update(&self.settings.meters, running);
+            let spectrum: Vec<f32> = if running { self.eq_panel.output_heights().collect() } else { Vec::new() };
             egui::ScrollArea::vertical().show(ui, |ui| {
-                // The rack, in running order. Only EQs have a custom body; they share the spectrum.
+                // The rack, in running order. EQs and compressors have custom bodies over the shared spectrum.
                 let settings = Arc::clone(&self.settings);
                 let items = settings.items();
                 let eq_panel = &mut self.eq_panel;
@@ -638,6 +640,8 @@ impl eframe::App for App {
                     let section = &item.section;
                     if item.kind() == dsp::EQ_NAME {
                         eq_panel.ui(ui, section, dsp::deesser_after(&items, item.id));
+                    } else if item.kind() == dsp::multiband::NAME {
+                        compressor_panel::ui(ui, section, reductions, &spectrum);
                     } else if item.kind() == dsp::DPDFNET.name {
                         model_row(ui, model_download);
                         section_body(ui, section, reductions);

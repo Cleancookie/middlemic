@@ -11,7 +11,7 @@ mod echo;
 mod eq;
 mod gain;
 mod limiter;
-mod multiband;
+pub mod multiband;
 mod rnnoise;
 
 pub use deepfilter::DeepFilter;
