@@ -600,8 +600,16 @@ fn refresh_icon(ui: &mut egui::Ui) -> egui::Response {
     response
 }
 
+/// A thin level meter with a visible track, so it reads as a meter even in silence.
 fn level_bar(ui: &mut egui::Ui, level: f32) -> egui::Response {
-    ui.add(egui::ProgressBar::new(level).desired_width(LEVEL_WIDTH).desired_height(5.0))
+    let (rect, response) = ui.allocate_exact_size(vec2(LEVEL_WIDTH, 5.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 2.0, theme::GRID);
+    if level > 0.0 {
+        let lit = egui::Rect::from_min_size(rect.min, vec2(rect.width() * level.clamp(0.0, 1.0), rect.height()));
+        painter.rect_filled(lit, 2.0, theme::accent(3, 4));
+    }
+    response
 }
 
 impl eframe::App for App {
