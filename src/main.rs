@@ -10,6 +10,7 @@ mod knob;
 #[cfg(test)]
 mod offline;
 mod playout;
+mod presets;
 mod rack;
 mod settings;
 mod setup;

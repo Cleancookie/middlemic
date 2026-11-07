@@ -554,6 +554,16 @@ impl Settings {
         })
     }
 
+    /// Replace the rack with the one in `text` (see [`rack_from_text`]). False, and nothing
+    /// changed, if the text is not in that format.
+    pub fn load_rack(&self, text: &str) -> bool {
+        let Some(items) = rack_from_text(text) else {
+            return false;
+        };
+        self.replace(items);
+        true
+    }
+
     /// Apply an order saved by name, from before stages had ids. Unknown names are skipped and
     /// stages missing from the list go back to their usual position, so a stage added in a
     /// later version (echo cancellation, which must come first) is not exiled to the end.
