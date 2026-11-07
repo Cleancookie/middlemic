@@ -252,9 +252,10 @@ fn strip_body(ui: &mut Ui, section: &Section, strip: usize, reduction: f32, [inp
                 row(ui, &[(field::THRESHOLD, "Threshold"), (field::KNEE, "Knee"), (field::RATIO, "Ratio")]);
                 row(ui, &[(field::ATTACK, "Attack"), (field::HOLD, "Hold"), (field::RELEASE, "Release")]);
                 ui.horizontal(|ui| {
-                    knob(ui, p(field::FLOOR), "Floor thr", color);
-                    knob(ui, p(field::FLOOR_RATIO), "Floor ratio", color);
-                    knob(ui, &section.params[LOOKAHEAD], "Lookahead", theme::TEXT_DIM);
+                    // Short labels: longer ones overlap at the 58 pt knob width; tooltips name them in full.
+                    knob(ui, p(field::FLOOR), "Floor", color);
+                    knob(ui, p(field::FLOOR_RATIO), "Fl ratio", color);
+                    knob(ui, &section.params[LOOKAHEAD], "Ahead", theme::TEXT_DIM);
                 });
             });
         });
@@ -309,7 +310,8 @@ fn reduction_meter(ui: &mut Ui, db: f32) {
         if depth > 0.5 {
             painter.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width(), depth)), 3.0, theme::WARN);
         }
-        ui.vertical_centered(|ui| {
+        // Fixed width: vertical_centered would claim the whole row and push Out off the edge.
+        ui.allocate_ui_with_layout(vec2(rect.width(), 0.0), egui::Layout::top_down(egui::Align::Center), |ui| {
             ui.label(egui::RichText::new("GR").size(9.5).color(theme::TEXT_DIM));
             ui.label(egui::RichText::new(format!("{db:.1}")).size(11.0).color(theme::TEXT_DIM));
         });
