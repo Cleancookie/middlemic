@@ -8,7 +8,7 @@ use crate::rack::{Rack, section_body};
 use crate::settings::Settings;
 use crate::theme;
 use crate::setup::{self, Progress};
-use eframe::egui;
+use eframe::egui::{self, Vec2, vec2};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -20,6 +20,8 @@ const METER_DECAY: f32 = 0.85;
 /// Narrower than this (in points, so DPI and zoom are already counted) the top bar uses two rows.
 const WIDE: f32 = 760.0;
 const LEVEL_WIDTH: f32 = 90.0;
+/// Levels, CPU readout and Start, roughly.
+const READOUTS_WIDTH: f32 = 260.0;
 
 pub fn run(settings: Arc<Settings>) -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -204,7 +206,9 @@ impl App {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let width = ui.available_width();
         let wide = width >= WIDE;
-        let picker = if wide { (width - 420.0) / 2.0 } else { width / 2.0 - 70.0 }.clamp(100.0, 320.0);
+        // Room left for the two pickers after the refresh buttons, separators and (when wide) readouts.
+        let others = if wide { 80.0 + READOUTS_WIDTH } else { 80.0 };
+        let picker = ((width - others) / 2.0).clamp(80.0, 320.0);
         ui.horizontal(|ui| {
             let locked = self.running();
             ui.add_enabled_ui(!locked, |ui| {
@@ -225,36 +229,41 @@ impl App {
     }
 
     fn input_picker(&mut self, ui: &mut egui::Ui, width: f32) {
-        egui::ComboBox::from_id_salt("input")
-            .width(width)
-            .truncate()
-            .selected_text(&self.input)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.input, SYSTEM_DEFAULT.to_string(), SYSTEM_DEFAULT);
-                for name in &self.devices.inputs {
-                    ui.selectable_value(&mut self.input, name.clone(), name);
-                }
-            })
-            .response
-            .on_hover_text("Input: your microphone");
+        // ComboBox::width is only a minimum; the box truncates to the space it is given.
+        ui.allocate_ui(vec2(width, ui.spacing().interact_size.y), |ui| {
+            egui::ComboBox::from_id_salt("input")
+                .width(width)
+                .truncate()
+                .selected_text(&self.input)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.input, SYSTEM_DEFAULT.to_string(), SYSTEM_DEFAULT);
+                    for name in &self.devices.inputs {
+                        ui.selectable_value(&mut self.input, name.clone(), name);
+                    }
+                })
+                .response
+                .on_hover_text(format!("Input: {}", self.input));
+        });
     }
 
     fn output_picker(&mut self, ui: &mut egui::Ui, width: f32) {
-        egui::ComboBox::from_id_salt("output")
-            .width(width)
-            .truncate()
-            .selected_text(if self.output.is_empty() { "Choose output…" } else { &self.output })
-            .show_ui(ui, |ui| {
-                for name in &self.devices.outputs {
-                    ui.selectable_value(&mut self.output, name.clone(), name);
-                }
-            })
-            .response
-            .on_hover_text("Output: where the cleaned mic goes, usually CABLE Input");
+        ui.allocate_ui(vec2(width, ui.spacing().interact_size.y), |ui| {
+            egui::ComboBox::from_id_salt("output")
+                .width(width)
+                .truncate()
+                .selected_text(if self.output.is_empty() { "Choose output…" } else { &self.output })
+                .show_ui(ui, |ui| {
+                    for name in &self.devices.outputs {
+                        ui.selectable_value(&mut self.output, name.clone(), name);
+                    }
+                })
+                .response
+                .on_hover_text(format!("Output: {} (usually CABLE Input)", self.output));
+        });
     }
 
     fn refresh_button(&mut self, ui: &mut egui::Ui) {
-        if ui.button("⟳").on_hover_text("Refresh devices").clicked() {
+        if refresh_icon(ui).on_hover_text("Refresh devices").clicked() {
             if let Ok(devices) = audio::list_devices() {
                 self.devices = devices;
             }
@@ -406,6 +415,30 @@ impl App {
         self.out_level = to_frac(meters.take_output()).max(self.out_level * METER_DECAY);
     }
 
+}
+
+/// A button with a painted circular arrow; egui's default fonts have no refresh glyph.
+fn refresh_icon(ui: &mut egui::Ui) -> egui::Response {
+    let size = Vec2::splat(ui.spacing().interact_size.y);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        let painter = ui.painter();
+        painter.rect(rect, visuals.corner_radius, visuals.weak_bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+        let (c, r) = (rect.center(), rect.height() * 0.28);
+        let stroke = egui::Stroke::new(1.5, visuals.fg_stroke.color);
+        let at = |a: f32| c + r * Vec2::angled(a);
+        // A 300° arc with a gap at the top right, arrowhead on its clockwise end.
+        let (start, end) = (-1.2_f32, 4.0_f32);
+        let points: Vec<_> = (0..=24).map(|i| at(start + (end - start) * i as f32 / 24.0)).collect();
+        painter.add(egui::Shape::line(points, stroke));
+        let tip = at(start);
+        let tangent = Vec2::angled(start - std::f32::consts::FRAC_PI_2);
+        let side = Vec2::angled(start);
+        let head = vec![tip, tip - tangent * 3.5 + side * 3.0, tip - tangent * 3.5 - side * 3.0];
+        painter.add(egui::Shape::convex_polygon(head, visuals.fg_stroke.color, egui::Stroke::NONE));
+    }
+    response
 }
 
 fn level_bar(ui: &mut egui::Ui, level: f32) -> egui::Response {
