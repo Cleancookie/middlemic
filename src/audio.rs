@@ -10,7 +10,7 @@ use ringbuf::{
     traits::{Consumer, Producer, Split},
 };
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -31,6 +31,8 @@ const PLAYOUT_CUSHION_SAMPLES: usize = 5 * FRAME * 2;
 pub struct Devices {
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
+    /// What Windows uses for "default recording device".
+    pub default_input: Option<String>,
 }
 
 /// Runs on its own thread: the UI thread may already own COM in a different apartment mode.
@@ -48,6 +50,10 @@ pub fn list_devices() -> Result<Devices> {
         Ok(Devices {
             inputs: names(Direction::Capture)?,
             outputs: names(Direction::Render)?,
+            default_input: enumerator
+                .get_default_device(Direction::Capture)
+                .and_then(|d| d.get_friendlyname())
+                .ok(),
         })
     })
     .join()
@@ -184,7 +190,7 @@ fn capture_loop(
     let enumerator = DeviceEnumerator::new()?;
     let device = find_device(&enumerator, Direction::Capture, needle.as_deref())?;
     eprintln!("input:  {}", device.get_friendlyname()?);
-    pump_capture(&device, &mut ring, &running, || settings.meters.record_dropout(), false)
+    pump_capture(&device, &running, ring_sink(&mut ring, || settings.meters.record_dropout()), false)
 }
 
 /// What the speakers play, as the echo canceller's reference. Opening a playback device for
@@ -206,16 +212,24 @@ fn reference_loop(
         return Ok(());
     }
     eprintln!("echo reference: {name}");
-    pump_capture(&device, &mut ring, &running, || {}, true)
+    pump_capture(&device, &running, ring_sink(&mut ring, || {}), true)
 }
 
-/// Read `device` into `ring` as mono 48 kHz `f32` until `running` clears. A loopback gets no
-/// data while the speakers are silent, so there a quiet wait is normal, not an error.
+/// A sink that pushes into `ring` and calls `on_overflow` when the reader fell behind.
+fn ring_sink<'a>(ring: &'a mut impl Producer<Item = f32>, mut on_overflow: impl FnMut() + 'a) -> impl FnMut(&[f32]) + 'a {
+    move |samples| {
+        if ring.push_slice(samples) < samples.len() {
+            on_overflow(); // the processing thread fell behind; audio lost
+        }
+    }
+}
+
+/// Hand `sink` the mono 48 kHz `f32` samples of `device` until `running` clears. A loopback gets
+/// no data while the speakers are silent, so there a quiet wait is normal, not an error.
 fn pump_capture(
     device: &wasapi::Device,
-    ring: &mut impl Producer<Item = f32>,
     running: &AtomicBool,
-    mut on_overflow: impl FnMut(),
+    mut sink: impl FnMut(&[f32]),
     loopback: bool,
 ) -> Result<()> {
     let mut client = device.get_iaudioclient()?;
@@ -248,9 +262,7 @@ fn pump_capture(
             ];
             samples.push(f32::from_le_bytes(b));
         }
-        if ring.push_slice(&samples) < samples.len() {
-            on_overflow(); // the processing thread fell behind; audio lost
-        }
+        sink(&samples);
         if loopback {
             let _ = event.wait_for_event(100);
         } else {
@@ -259,6 +271,54 @@ fn pump_capture(
     }
     client.stop_stream()?;
     Ok(())
+}
+
+/// Listens to several microphones at once, keeping each one's loudest recent sample, so the
+/// setup wizard can show which mic hears the user. A mic that cannot be opened just stays at 0.
+pub struct MicMonitor {
+    running: Arc<AtomicBool>,
+    peaks: Vec<(String, Arc<AtomicU32>)>,
+    handles: Vec<thread::JoinHandle<()>>,
+}
+
+impl MicMonitor {
+    pub fn start(names: &[String]) -> Self {
+        let running = Arc::new(AtomicBool::new(true));
+        let mut monitor = Self { running: running.clone(), peaks: Vec::new(), handles: Vec::new() };
+        for name in names {
+            let peak = Arc::new(AtomicU32::new(0));
+            monitor.peaks.push((name.clone(), peak.clone()));
+            let (name, running) = (name.clone(), running.clone());
+            monitor.handles.push(thread::spawn(move || {
+                let listen = || -> Result<()> {
+                    initialize_mta().ok()?;
+                    let enumerator = DeviceEnumerator::new()?;
+                    let device = find_device(&enumerator, Direction::Capture, Some(&name))?;
+                    // Non-negative floats order like their bits, so a max on the bits is a max on the value.
+                    pump_capture(&device, &running, |s| {
+                        let loudest = s.iter().fold(0f32, |m, x| m.max(x.abs()));
+                        peak.fetch_max(loudest.to_bits(), Ordering::Relaxed);
+                    }, false)
+                };
+                let _ = listen();
+            }));
+        }
+        monitor
+    }
+
+    /// Each mic's loudest sample since the last call, as a fraction of full scale.
+    pub fn take_peaks(&self) -> Vec<(String, f32)> {
+        self.peaks.iter().map(|(n, p)| (n.clone(), f32::from_bits(p.swap(0, Ordering::Relaxed)))).collect()
+    }
+}
+
+impl Drop for MicMonitor {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        self.handles.drain(..).for_each(|h| {
+            let _ = h.join();
+        });
+    }
 }
 
 fn dsp_loop(

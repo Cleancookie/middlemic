@@ -8,6 +8,7 @@ mod cpu;
 mod dsp;
 mod eq_panel;
 mod feedback_panel;
+mod icons;
 mod knob;
 #[cfg(test)]
 mod offline;
@@ -15,11 +16,16 @@ mod playout;
 mod presets;
 mod rack;
 mod settings;
+mod settings_page;
 mod setup;
 mod spectrum;
+#[cfg(windows)]
+mod startup;
+mod storage;
 mod theme;
 #[cfg(windows)]
 mod ui;
+mod wizard;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -27,6 +33,9 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(about = "Lightweight mic processing: headset in, cleaned audio out to a virtual cable")]
 struct Cli {
+    /// Open the window minimised. Used by "Launch when Windows starts".
+    #[arg(long)]
+    minimized: bool,
     /// With no command, opens the window.
     #[command(subcommand)]
     command: Option<Command>,
@@ -53,11 +62,12 @@ fn main() -> Result<()> {
     use std::time::Duration;
 
     let settings = settings::Settings::new(dsp::default_sections());
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    match cli.command {
         None => {
             // SAFETY: detaches the console a double-click launch created; no pointers involved.
             unsafe { windows_sys::Win32::System::Console::FreeConsole() };
-            ui::run(settings).map_err(|e| anyhow::anyhow!("{e}"))
+            ui::run(settings, cli.minimized).map_err(|e| anyhow::anyhow!("{e}"))
         }
         Some(Command::Devices) => {
             let devices = audio::list_devices()?;

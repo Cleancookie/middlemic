@@ -1,67 +1,92 @@
 # middlemic
 
-Lightweight mic processing for Windows. Takes your headset mic, runs it through a
-chain of effects (noise removal, EQ, de-esser, compression, limiter), and plays the
-result into a virtual audio cable so Discord, games and OBS can use it as a normal
-recording device.
+Lightweight mic processing for Windows. Takes your headset mic, runs it through a rack of
+effects, and plays the result into a virtual audio cable so Discord, OBS and games can use
+it as a normal microphone.
 
 ```
-Headset mic ──► middlemic (chain) ──► virtual cable ──► "CABLE Output" recording device
+Headset mic ──► middlemic (rack of stages) ──► CABLE Input ══► "CABLE Output" microphone
 ```
 
-No DAW, no Virtual Audio Cable routing maze, no heavy plugin host. One small
-executable.
+No DAW, no routing maze, no plugin host. One small executable.
 
 ![middlemic running: preset picker and devices on top, a rack of mic boost, DPDFNet noise removal, EQ and the multiband compressor](docs/screenshot.png)
 
-## Status
+## First run
 
-Early. Working today:
+The first time you open middlemic, a short setup walks you through three steps. You can run it
+again any time from **Settings → Run setup again**.
 
-- Capture from any recording device, process, play to any playback device (WASAPI, shared mode)
-- Pluggable chain: every stage implements `Processor`, so stages can be swapped, reordered or stacked
-- Stages, in order: echo cancellation (off by default), DeepFilterNet3 noise removal, mic boost,
-  EQ, de-esser, 3-band compressor, limiter
-- Three noise removers to compare, switch one on at a time: DeepFilterNet3 (the default),
-  DPDFNet and RNNoise (both off by default, each with its own Max reduction). DPDFNet needs
-  `dpdfnet2_48khz_hr.onnx` (Ceva, Apache-2.0, from huggingface.co/Ceva-IP/DPDFNet): the row
-  has a Download model button that fetches a pinned revision, checks its SHA-256 and saves it
-  to `%APPDATA%\middlemic\models`. A copy in a `models` folder next to the exe works too. On a quiet test recording DPDFNet lost less speech than DeepFilterNet at the same
-  cap but costs about 10 times the CPU (40% of a core) and adds 50 ms; RNNoise costs about 1%
-- Echo cancellation (WebRTC AEC3, pure Rust) works without noise removal. It listens to what
-  your speakers play through WASAPI loopback of the default playback device, so set Windows
-  playback to your speakers or headphones, not to the virtual cable. If that is the output
-  device, the stage stays idle rather than erase your own voice
-- Simple window: device pickers, start/stop, level meters, and the stages as a rack of rows
-  (fold arrow, bypass switch, reset, live gain-reduction readout); fold state is remembered.
-  Drag a row's grip to reorder the chain while it runs; the order is saved too
-- EQ screen in the style of a plugin EQ: response curve over a live spectrum, draggable band
-  dots, a row of knobs per band, and a scrolling spectrogram with the de-esser frequency marked
-- Gain-reduction meters on the de-esser and compressor; the compressor has a Simple mode
-  (one Amount slider plus Gentle, Voice and Strong) and an Advanced mode with every dial
-- Settings and device choices are saved to `%APPDATA%\middlemic\settings.ini`
-- Whole chain costs about 4% of one core in testing (DeepFilterNet about 1.6% of that),
-  and the DSP thread runs at below-normal priority
+1. **Cable.** Discord and games can only listen to a microphone, so middlemic plays into a
+   virtual cable, [VB-CABLE](https://vb-audio.com/Cable/), and they listen to its other end.
+   **Install** downloads it from vb-audio.com, checks the installer's digital signature and
+   runs it with the usual Windows admin and driver-trust prompts. **Skip** if you already
+   have it, or use another cable. This step is skipped on its own when the cable is installed.
+2. **Microphone.** Every recording device is listed with a live level bar, so you can say
+   something and see which one hears you. "Windows default" is offered too. The Windows
+   default recording device is pre-selected, never `CABLE Output`.
+3. **Output.** `CABLE Input` is pre-selected. In Discord, OBS or a game, pick **`CABLE Output`**
+   as your microphone; middlemic plays into `CABLE Input`. Choose another output only if you
+   know what you are doing.
 
-Planned:
+Nothing from VB-Audio is stored in this repository. VB-CABLE is donationware by VB-Audio
+([www.vb-cable.com](https://vb-cable.com)); all participations are welcome.
 
-- [ ] Tray icon, presets, start minimised, auto-start
-- [ ] One-time setup that offers to install VB-Cable
-- [ ] Optional chain item that hosts third-party plugins (CLAP / VST3)
+## The rack
 
-## Virtual cable
+The window is a rack of stages, in running order. Each row has a fold arrow, a power switch
+(a bypassed stage passes sound through untouched and adds no delay), a reset, and a live
+gain-reduction readout where it makes sense. Drag a row's grip to reorder the chain while it
+runs. Hover any control for a plain-language tip.
 
-Windows only lists recording devices that a driver provides, and unsigned drivers will
-not load with Secure Boot on. middlemic does not ship its own driver. It plays into the
-playback side of a signed virtual cable, [VB-CABLE](https://vb-audio.com/Cable/), and you
-pick its recording side (`CABLE Output`) in Discord.
+| Stage | What it does |
+| --- | --- |
+| **Feedback suppressor** | Spots speaker-to-mic howls by FFT and cuts each with a narrow notch that fades once the howl is gone. A strip shows each notch's pitch and depth. |
+| **Echo cancellation** | WebRTC AEC3, pure Rust. Removes what your speakers play from your mic. It listens to the default playback device through WASAPI loopback, so set Windows playback to your speakers or headphones, not the cable. If the cable is the default, the stage idles rather than erase your own voice. Off by default. |
+| **DPDFNet** | The default noise removal: removes fans, hum, keyboard and room noise and keeps speech clear. Needs a one-time model download (see below). Adds about 50 ms and uses roughly 40% of a core. |
+| **DeepFilterNet** | The previous noise removal, kept to compare. Cheaper than DPDFNet, adds 30 ms, and removes more speech at the same cap. Off by default. |
+| **RNNoise** | A very cheap noise remover (about 1% of a core, 10 ms). Off by default. |
+| **Mic boost** | Plain gain. |
+| **EQ** | A plugin-style EQ: response curve over a live spectrum, draggable band dots, a row of knobs per band, and a scrolling spectrogram with the de-esser's frequency marked. |
+| **De-esser** | Tames harsh "s" sounds, with a gain-reduction meter. |
+| **Compressor** | A Maximus-style multiband compressor. Simple mode is one Amount slider plus Gentle, Voice and Strong; Advanced mode shows every dial. |
+| **Limiter** | A last stage that stops peaks clipping. |
 
-The **Set up virtual cable** button downloads VB-CABLE from vb-audio.com, checks the
-installer's digital signature, and runs it with the usual Windows admin and driver-trust
-prompts. Nothing from VB-Audio is stored in this repository.
+The three noise removers have a **Max reduction** knob: the most noise each may remove, in dB.
+At 18 dB speech stays natural; raise it for a noisier room.
 
-VB-CABLE is donationware by VB-Audio ([www.vb-cable.com](https://vb-cable.com)). All
-participations are welcome.
+**DPDFNet model.** The row shows a **Download model** button until the file is installed. It
+fetches `dpdfnet2_48khz_hr.onnx` (Ceva, Apache-2.0, from huggingface.co/Ceva-IP/DPDFNet) at a
+pinned revision, checks its SHA-256 and saves it to `%APPDATA%\middlemic\models`. The stage
+starts working as soon as the file lands. A copy in a `models` folder next to the exe works too.
+
+### Add, remove and multiple instances
+
+The dashed **+** row under the stages opens a menu of every kind and adds one to the bottom of
+the rack; drag it where you want it. You can have more than one of the same kind, each with its
+own settings: two EQs, say, or a compressor before and after the EQ. Remove a stage with the ✕
+on its row; an undo stays on screen briefly.
+
+## Presets
+
+The preset picker at the top loads a whole rack in one click, and you can keep switching while
+it runs. The **…** menu saves, saves as, renames and deletes your own presets, which live in
+`%APPDATA%\middlemic\presets`. A dot after the name means you have changed the rack since
+loading. Device choices are not part of a preset.
+
+Built in:
+
+- **Default**: one of each stage, DPDFNet on.
+- **Alex's preset**: echo cancellation, mic boost, DPDFNet, EQ and the compressor on; DeepFilterNet, RNNoise, the de-esser and the limiter off.
+
+## Settings
+
+The gear in the top bar opens the settings page, which replaces the rack until you press **Back**.
+
+- **Devices**: the microphone and output pickers and a refresh button. Locked while running.
+- **Launch when Windows starts**: adds a value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, so it needs no administrator permission, and starts middlemic minimised. It shows up in Task Manager's Startup apps.
+- **Storage**: lists what is in `%APPDATA%\middlemic` (models, presets, settings.ini) with sizes. Each has its own **Delete**. **Reset everything** deletes all of it, puts every setting back and runs the setup again, after you confirm on the page.
+- **VB-CABLE**: **Install / reinstall**, and **Run setup again**.
 
 ## Build
 
@@ -71,41 +96,67 @@ Cross-compiles from Linux or WSL:
 rustup target add x86_64-pc-windows-gnu
 sudo apt install mingw-w64
 cargo build --release --target x86_64-pc-windows-gnu
-cargo test
 ```
 
-Or with make: `make build`, `make test`, and `make open`, which builds if anything changed
-and then starts the window on Windows (WSL only). Each `make open` starts another copy, so
-close the old window first.
+Or with make: `make build`, `make test`, and `make open`, which builds if anything changed and
+then starts the window on Windows (WSL only). Each `make open` starts another copy, so close the
+old window first.
 
-## Use
+Two dependencies are pinned on purpose. `tract-*` is `=0.21.4` because 0.21.19 breaks
+`deep_filter`, and `deep_filter` is a git dependency at a fixed revision of
+[Rikorose/DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) (MIT OR Apache-2.0),
+because the crates.io release has no inference code.
+
+## Test
+
+```sh
+cargo test --release
+```
+
+This runs on Linux. It covers the DSP and also draws the UI headless, including the wizard and
+the settings page at 420 and 800 points wide. A few tests are `#[ignore]`d because they need a
+recording; see below.
+
+## Command line
 
 ```sh
 middlemic.exe                  # opens the window
+middlemic.exe --minimized      # opens it minimised (what "Launch when Windows starts" uses)
 middlemic.exe devices          # list device names
 middlemic.exe run --input "Headset Microphone" --output "CABLE Input"   # no window, saved settings
 ```
 
-DeepFilterNet comes from a pinned git commit of
-[Rikorose/DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) (MIT OR Apache-2.0),
-because the crates.io release has no inference code.
-
 ## Testing with a recording
 
-The tests include offline tools that run a real recording (anything `symphonia` can decode,
-such as `.m4a`) through the chain in 10 ms frames, as the live engine does. They are
-`#[ignore]`d, so run them by name:
+The ignored tests run a real recording (anything `symphonia` can decode, such as `.m4a`)
+through the rack in 10 ms frames, as the live engine does. Run them by name:
 
 ```sh
 export MIDDLEMIC_TEST_AUDIO=/path/to/recording.m4a MIDDLEMIC_TEST_OUT=/path/to/output-dir
+export MIDDLEMIC_MODELS=/path/to/dir-with-the-onnx-model     # for DPDFNet
+cargo test --release compare_denoisers  -- --ignored --nocapture   # the three denoisers side by side
+cargo test --release feedback_on_recording -- --ignored --nocapture   # does the feedback suppressor misfire?
 cargo test --release analyse_chain -- --ignored --nocapture   # per-frame timing, gating
 cargo test --release analyse_cap   -- --ignored --nocapture   # noise removal strength sweep
 cargo test --release measure_delay -- --ignored --nocapture   # real delay of each stage
 ```
 
 Processed `.wav` files are written to `MIDDLEMIC_TEST_OUT` so you can listen to the result.
-When the output is lined up against the input, allow for the noise removal's 30 ms delay,
-or every word edge looks cut.
+When the output is lined up against the input, allow for the noise removal's delay, or every
+word edge looks cut.
+
+`compare_denoisers` prints, per remover and cap, the delay, how much quieter the pauses get
+(more is better), how much quieter speech gets (less is better) and how many words dip by over
+6 dB. On two test recordings at an 18 dB cap, speech loss in dB was:
+
+| Recording | DeepFilterNet | DPDFNet | RNNoise |
+| --- | --- | --- | --- |
+| Quiet room | 2.1 | 0.5 | 0.45 |
+| Background noise | 4.56 | 3.36 | 2.99 |
+
+On the noisy one the pauses get quieter by 14.5, 15.1 and 13.6 dB. DPDFNet cleans pauses most
+and loses less speech than DeepFilterNet in both; RNNoise loses the least speech but is cheapest
+and cleans pauses a little less.
 
 ## Licence
 

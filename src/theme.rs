@@ -33,6 +33,18 @@ pub fn accent(index: usize, count: usize) -> Color32 {
     RAMP[i].lerp_to_gamma(RAMP[i + 1], scaled - i as f32)
 }
 
+/// A thin level meter with a visible track, so it reads as a meter even in silence.
+pub fn level_bar(ui: &mut Ui, level: f32, width: f32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 5.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 2.0, GRID);
+    if level > 0.0 {
+        let lit = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * level.clamp(0.0, 1.0), rect.height()));
+        painter.rect_filled(lit, 2.0, accent(3, 4));
+    }
+    response
+}
+
 /// 0..1 that eases in and out over 180 ms towards `on`. Repaints only while it moves.
 pub fn animate(ctx: &Context, id: egui::Id, on: bool) -> f32 {
     ctx.animate_bool_with_time_and_easing(id, on, 0.18, egui::emath::easing::cubic_in_out)
