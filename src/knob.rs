@@ -39,10 +39,15 @@ fn turned(norm: f32, drag_up: f32, scroll_up: f32, fine: bool) -> Option<f32> {
     (delta != 0.0).then(|| (norm + delta).clamp(0.0, 1.0))
 }
 
+/// Space under a knob's value, so it reads as belonging to the knob above it and not the label below.
+const ROW_GAP: f32 = 10.0;
+
 /// Draws the knob with its value underneath and `label` below that.
 pub fn knob(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Response {
     ui.vertical(|ui| {
         ui.set_width(WIDTH);
+        // Label hugs its dial; the gap to the next row's label comes after the value instead.
+        ui.spacing_mut().item_spacing.y = 0.0;
         let caption = ui
             .vertical_centered(|ui| {
                 let text = egui::RichText::new(label.to_uppercase()).size(9.5).extra_letter_spacing(0.8).color(theme::TEXT_DIM);
@@ -89,6 +94,7 @@ pub fn knob(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Re
 
         let text = theme::TEXT_DIM.lerp_to_gamma(theme::TEXT, hover);
         ui.vertical_centered(|ui| ui.label(egui::RichText::new(param.display()).size(11.0).color(text)));
+        ui.add_space(ROW_GAP);
         theme::param_tooltip(response, param, HINT)
     })
     .inner
