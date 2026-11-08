@@ -7,29 +7,29 @@ use crate::dsp;
 use crate::eq_panel::EqPanel;
 use crate::feedback_panel;
 use crate::presets::{self, Presets};
-use crate::rack::{Rack, cross_button, section_body};
+use crate::icons::gear_button;
+use crate::rack::{Rack, section_body};
 use crate::settings::Settings;
-use crate::theme;
+use crate::settings_page;
 use crate::setup::{self, Progress};
-use eframe::egui::{self, Vec2, vec2};
+use crate::storage;
+use crate::theme;
+use crate::wizard::{self, Wizard};
+use eframe::egui::{self, vec2};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const SYSTEM_DEFAULT: &str = "System default";
 const SAVE_EVERY: Duration = Duration::from_secs(1);
 /// Meters fall at this fraction per redraw.
 const METER_DECAY: f32 = 0.85;
 /// Narrower than this (in points, so DPI and zoom are already counted) the top bar uses two rows.
-const WIDE: f32 = 800.0;
+const WIDE: f32 = 560.0;
 const LEVEL_WIDTH: f32 = 90.0;
-/// Levels, CPU readout and Start, roughly.
-const READOUTS_WIDTH: f32 = 260.0;
 const PRESET_WIDTH: f32 = 130.0;
-/// The refresh buttons, the preset menu button, separators and gaps between the pickers.
-const CONTROLS_WIDTH: f32 = 80.0 + 60.0;
 
-pub fn run(settings: Arc<Settings>) -> eframe::Result {
+pub fn run(settings: Arc<Settings>, minimized: bool) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("middlemic")
@@ -46,6 +46,9 @@ pub fn run(settings: Arc<Settings>) -> eframe::Result {
         options,
         Box::new(|cc| {
             theme::apply(&cc.egui_ctx);
+            if minimized {
+                cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
             Ok(Box::new(App::new(settings)))
         }),
     )
@@ -138,8 +141,27 @@ struct App {
     saved_text: String,
     last_save: Instant,
     cpu: CpuMeter,
-    banner_dismissed: bool,
+    page: Page,
+    settings_page: settings_page::Page,
+    /// Why the last settings action failed, shown at the top of the page.
+    page_error: String,
+    storage: Vec<storage::Entry>,
+    autostart: bool,
+    /// Whether the setup wizard has been finished; remembered in settings.ini.
+    setup_done: bool,
+    wizard: Option<Wizard>,
+    /// Listens to every mic while the wizard shows them.
+    mic_monitor: Option<audio::MicMonitor>,
+    mic_levels: HashMap<String, f32>,
 }
+
+#[derive(Clone, Copy, PartialEq)]
+enum Page {
+    Rack,
+    Settings,
+}
+
+const SETUP_DONE_KEY: &str = "setup.done";
 
 impl App {
     fn new(settings: Arc<Settings>) -> Self {
@@ -150,12 +172,13 @@ impl App {
         let devices = audio::list_devices().unwrap_or(Devices {
             inputs: Vec::new(),
             outputs: Vec::new(),
+            default_input: None,
         });
         let input = extras
             .get("device.input")
             .filter(|n| devices.inputs.contains(n))
             .cloned()
-            .unwrap_or_else(|| SYSTEM_DEFAULT.to_string());
+            .unwrap_or_else(|| wizard::WINDOWS_DEFAULT.to_string());
         let output = extras
             .get("device.output")
             .filter(|n| devices.outputs.contains(n))
@@ -185,8 +208,19 @@ impl App {
             saved_text: saved,
             last_save: Instant::now(),
             cpu: CpuMeter::new(),
-            banner_dismissed: false,
+            page: Page::Rack,
+            settings_page: settings_page::Page::default(),
+            page_error: String::new(),
+            storage: Vec::new(),
+            autostart: false,
+            setup_done: extras.contains_key(SETUP_DONE_KEY),
+            wizard: None,
+            mic_monitor: None,
+            mic_levels: HashMap::new(),
         };
+        if !app.setup_done {
+            app.open_wizard();
+        }
         if app.output.is_empty() {
             app.status = "Pick an output device (a virtual cable such as CABLE Input).".into();
         }
@@ -199,7 +233,7 @@ impl App {
 
     fn start(&mut self) {
         self.stop();
-        let input = (self.input != SYSTEM_DEFAULT).then(|| self.input.clone());
+        let input = (self.input != wizard::WINDOWS_DEFAULT).then(|| self.input.clone());
         match Engine::start(input, self.output.clone(), self.settings.clone()) {
             Ok(engine) => {
                 self.engine = Some(engine);
@@ -215,16 +249,24 @@ impl App {
         self.out_level = 0.0;
     }
 
+    fn current_text(&self) -> String {
+        let mut extras = vec![
+            ("device.input", self.input.as_str()),
+            ("device.output", self.output.as_str()),
+            ("preset", self.presets.current()),
+        ];
+        if self.setup_done {
+            extras.push((SETUP_DONE_KEY, "1"));
+        }
+        self.settings.to_text(&extras)
+    }
+
     fn save_if_changed(&mut self) {
         if self.last_save.elapsed() < SAVE_EVERY {
             return;
         }
         self.last_save = Instant::now();
-        let text = self.settings.to_text(&[
-            ("device.input", &self.input),
-            ("device.output", &self.output),
-            ("preset", self.presets.current()),
-        ]);
+        let text = self.current_text();
         if text != self.saved_text {
             if let Some(dir) = self.save_path.parent() {
                 let _ = std::fs::create_dir_all(dir);
@@ -235,24 +277,11 @@ impl App {
         }
     }
 
-    /// preset … | input ⟳ | output ⟳ | levels | CPU | start. Below `WIDE` points the readouts wrap to a second row.
+    /// preset … | levels | CPU | gear | start. Below `WIDE` points the readouts wrap to a second row.
     fn top_bar(&mut self, ui: &mut egui::Ui) {
-        let width = ui.available_width();
-        let wide = width >= WIDE;
-        // Room left for the two pickers after the preset picker, buttons, separators and (when wide) readouts.
-        let others = CONTROLS_WIDTH + PRESET_WIDTH + if wide { READOUTS_WIDTH } else { 0.0 };
-        let picker = ((width - others) / 2.0).clamp(64.0, 320.0);
+        let wide = ui.available_width() >= WIDE;
         ui.horizontal(|ui| {
             self.preset_picker(ui);
-            ui.separator();
-            let locked = self.running();
-            ui.add_enabled_ui(!locked, |ui| {
-                self.input_picker(ui, picker);
-                self.refresh_button(ui);
-                ui.separator();
-                self.output_picker(ui, picker);
-                self.refresh_button(ui);
-            });
             if wide {
                 ui.separator();
                 self.readouts(ui);
@@ -402,71 +431,17 @@ impl App {
         }
     }
 
-    fn input_picker(&mut self, ui: &mut egui::Ui, width: f32) {
-        // ComboBox::width is only a minimum; the box truncates to the space it is given.
-        ui.allocate_ui(vec2(width, ui.spacing().interact_size.y), |ui| {
-            let picker = egui::ComboBox::from_id_salt("input")
-                .width(width)
-                .truncate()
-                .selected_text(&self.input)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.input, SYSTEM_DEFAULT.to_string(), SYSTEM_DEFAULT);
-                    for name in &self.devices.inputs {
-                        ui.selectable_value(&mut self.input, name.clone(), name);
-                    }
-                })
-                .response;
-            theme::help_tooltip_with_hint(
-                picker,
-                "Input device",
-                "The microphone to clean up, usually your headset mic. System default follows whatever Windows uses. Locked while running.",
-                &self.input,
-            );
-        });
-    }
-
-    fn output_picker(&mut self, ui: &mut egui::Ui, width: f32) {
-        ui.allocate_ui(vec2(width, ui.spacing().interact_size.y), |ui| {
-            let picker = egui::ComboBox::from_id_salt("output")
-                .width(width)
-                .truncate()
-                .selected_text(if self.output.is_empty() { "Choose output…" } else { &self.output })
-                .show_ui(ui, |ui| {
-                    for name in &self.devices.outputs {
-                        ui.selectable_value(&mut self.output, name.clone(), name);
-                    }
-                })
-                .response;
-            theme::help_tooltip_with_hint(
-                picker,
-                "Output device",
-                "Where the cleaned mic goes. Choose CABLE Input (VB-CABLE), then pick CABLE Output as your microphone in Discord or your game. Locked while running.",
-                &self.output,
-            );
-        });
-    }
-
-    fn refresh_button(&mut self, ui: &mut egui::Ui) {
-        let refresh = refresh_icon(ui);
-        if refresh.clicked() {
-            if let Ok(devices) = audio::list_devices() {
-                self.devices = devices;
-            }
-        }
-        theme::help_tooltip(refresh, "Refresh devices", "Looks for microphones and outputs again. Use it after plugging in a headset or installing VB-CABLE.");
-    }
-
-    /// levels | CPU | start, with start pinned to the right edge.
+    /// levels | CPU | gear | start, with start pinned to the right edge.
     fn readouts(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 3.0;
             theme::help_tooltip(
-                level_bar(ui, self.in_level),
+                theme::level_bar(ui, self.in_level, LEVEL_WIDTH),
                 "Input level",
                 "How loud your mic is before processing. Aim for it to move well into the bar when you talk without sitting at the very end.",
             );
             theme::help_tooltip(
-                level_bar(ui, self.out_level),
+                theme::level_bar(ui, self.out_level, LEVEL_WIDTH),
                 "Output level",
                 "How loud your voice is after the whole rack, as Discord and games hear it. It should look steadier than the input level.",
             );
@@ -492,6 +467,17 @@ impl App {
             &detail,
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            self.start_stop(ui);
+            let gear = gear_button(ui);
+            theme::help_tooltip(gear.clone(), "Settings", "Devices, launch at startup, stored files and VB-CABLE.");
+            if gear.clicked() {
+                self.open_settings();
+            }
+        });
+    }
+
+    fn start_stop(&mut self, ui: &mut egui::Ui) {
+        {
             if self.running() {
                 let stop = ui.button("Stop");
                 if stop.clicked() {
@@ -509,30 +495,7 @@ impl App {
                     "Begins cleaning your mic and sending it to the output. Choose an output device first.",
                 );
             }
-        });
-    }
-
-    /// Shown on every launch until dismissed, while no virtual cable is installed.
-    fn cable_banner(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.colored_label(theme::WARN, "Discord and games need a virtual cable to hear middlemic.");
-            let setup = ui.add_enabled(!self.running(), egui::Button::new("Set up VB-CABLE…"));
-            if setup.clicked() {
-                self.setup = SetupState::Confirm;
-            }
-            theme::help_tooltip(
-                setup,
-                "Set up VB-CABLE",
-                "Installs VB-CABLE, a free virtual audio cable. middlemic plays your cleaned mic into it, and Discord or your game listens to it as a microphone. Windows asks for permission. Not available while running.",
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let hide = cross_button(ui);
-                if hide.clicked() {
-                    self.banner_dismissed = true;
-                }
-                theme::help_tooltip(hide, "Hide", "Hides this message until you next start the app.");
-            });
-        });
+        }
     }
 
     /// Re-list devices, and point the output at the cable if it is there.
@@ -621,50 +584,151 @@ impl App {
         }
     }
 
+    fn open_wizard(&mut self) {
+        self.stop();
+        self.refresh_devices();
+        self.wizard = Some(Wizard::new(&self.wizard_env_of_devices()));
+    }
+
+    fn wizard_env_of_devices(&self) -> wizard::Env<'_> {
+        wizard::Env {
+            inputs: &self.devices.inputs,
+            outputs: &self.devices.outputs,
+            default_input: self.devices.default_input.as_deref(),
+            levels: &self.mic_levels,
+        }
+    }
+
+    fn refresh_devices(&mut self) {
+        if let Ok(devices) = audio::list_devices() {
+            self.devices = devices;
+        }
+    }
+
+    fn wizard_view(&mut self, ui: &mut egui::Ui) {
+        let Some(mut wizard) = self.wizard.take() else { return };
+        let event = wizard.show(ui, &self.wizard_env_of_devices());
+        match event {
+            Some(wizard::Event::Install) => self.setup = SetupState::Running(setup::spawn_install()),
+            Some(wizard::Event::Finish) => {
+                self.input = wizard.input;
+                self.output = wizard.output;
+                self.setup_done = true;
+                self.status.clear();
+                self.mic_monitor = None;
+                return;
+            }
+            None => {}
+        }
+        self.wizard = Some(wizard);
+    }
+
+    /// Listen to every mic while the wizard is on its microphone step, and only then.
+    fn update_mic_levels(&mut self) {
+        let listening = self.wizard.as_ref().is_some_and(|w| w.step() == wizard::Step::Mic);
+        if !listening {
+            self.mic_monitor = None;
+            return;
+        }
+        if self.mic_monitor.is_none() {
+            let names: Vec<String> = self.wizard_env_of_devices().mics().cloned().collect();
+            self.mic_monitor = Some(audio::MicMonitor::start(&names));
+        }
+        let Some(monitor) = &self.mic_monitor else { return };
+        for (name, peak) in monitor.take_peaks() {
+            let level = self.mic_levels.entry(name).or_default();
+            *level = peak_to_fraction(peak).max(*level * METER_DECAY);
+        }
+    }
+
+    fn open_settings(&mut self) {
+        self.page = Page::Settings;
+        self.page_error.clear();
+        self.autostart = crate::startup::is_enabled();
+        self.storage = storage::list(&storage::data_dir());
+    }
+
+    fn settings_view(&mut self, ui: &mut egui::Ui) {
+        use settings_page::{Action, View};
+        let action = self.settings_page.show(
+            ui,
+            View {
+                inputs: &self.devices.inputs,
+                outputs: &self.devices.outputs,
+                input: &mut self.input,
+                output: &mut self.output,
+                running: self.engine.as_ref().is_some_and(Engine::is_running),
+                autostart: self.autostart,
+                storage: &self.storage,
+                error: &self.page_error,
+            },
+        );
+        let Some(action) = action else { return };
+        self.page_error.clear();
+        let result = match action {
+            Action::Back => {
+                self.page = Page::Rack;
+                Ok(())
+            }
+            Action::RefreshDevices => {
+                self.refresh_devices();
+                Ok(())
+            }
+            Action::InstallCable => {
+                self.setup = SetupState::Confirm;
+                Ok(())
+            }
+            Action::RunSetup => {
+                self.page = Page::Rack;
+                self.open_wizard();
+                Ok(())
+            }
+            Action::SetAutostart(on) => crate::startup::set_enabled(on),
+            Action::Delete(path) => self.delete_stored(&path),
+            Action::ResetEverything => self.reset_everything(),
+        };
+        if let Err(why) = result {
+            self.page_error = why;
+        }
+        if self.page == Page::Settings {
+            self.autostart = crate::startup::is_enabled();
+            self.storage = storage::list(&storage::data_dir());
+        }
+    }
+
+    /// Delete one stored item. What the app keeps in memory is not written back over the deletion.
+    fn delete_stored(&mut self, path: &std::path::Path) -> Result<(), String> {
+        storage::delete(path).map_err(|e| format!("Could not delete {}: {e}", path.display()))?;
+        let current = self.presets.current().to_string();
+        self.presets = Presets::new(presets::presets_dir(), &current);
+        self.saved_text = self.current_text();
+        Ok(())
+    }
+
+    /// Delete everything stored, put every setting back, and run the setup again.
+    fn reset_everything(&mut self) -> Result<(), String> {
+        self.stop();
+        storage::delete_all(&storage::data_dir()).map_err(|e| format!("Could not delete everything: {e}"))?;
+        self.settings.apply_text(&Settings::new(dsp::default_sections()).to_text(&[]));
+        self.presets = Presets::new(presets::presets_dir(), "");
+        self.model_download = None;
+        self.setup_done = false;
+        self.saved_text = self.current_text();
+        self.page = Page::Rack;
+        self.open_wizard();
+        Ok(())
+    }
+
     fn update_levels(&mut self) {
         let meters = &self.settings.meters;
-        // -60 dBFS..0 dBFS across the bar.
-        let to_frac = |peak: f32| ((20.0 * peak.max(1e-6).log10() + 60.0) / 60.0).clamp(0.0, 1.0);
-        self.in_level = to_frac(meters.take_input()).max(self.in_level * METER_DECAY);
-        self.out_level = to_frac(meters.take_output()).max(self.out_level * METER_DECAY);
+        self.in_level = peak_to_fraction(meters.take_input()).max(self.in_level * METER_DECAY);
+        self.out_level = peak_to_fraction(meters.take_output()).max(self.out_level * METER_DECAY);
     }
-
 }
 
-/// A button with a painted circular arrow; egui's default fonts have no refresh glyph.
-fn refresh_icon(ui: &mut egui::Ui) -> egui::Response {
-    let size = Vec2::splat(ui.spacing().interact_size.y);
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    if ui.is_rect_visible(rect) {
-        let visuals = ui.style().interact(&response);
-        let painter = ui.painter();
-        painter.rect(rect, visuals.corner_radius, visuals.weak_bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
-        let (c, r) = (rect.center(), rect.height() * 0.28);
-        let stroke = egui::Stroke::new(1.5, visuals.fg_stroke.color);
-        let at = |a: f32| c + r * Vec2::angled(a);
-        // A 300° arc with a gap at the top right, arrowhead on its clockwise end.
-        let (start, end) = (-1.2_f32, 4.0_f32);
-        let points: Vec<_> = (0..=24).map(|i| at(start + (end - start) * i as f32 / 24.0)).collect();
-        painter.add(egui::Shape::line(points, stroke));
-        let tip = at(start);
-        let tangent = Vec2::angled(start - std::f32::consts::FRAC_PI_2);
-        let side = Vec2::angled(start);
-        let head = vec![tip, tip - tangent * 3.5 + side * 3.0, tip - tangent * 3.5 - side * 3.0];
-        painter.add(egui::Shape::convex_polygon(head, visuals.fg_stroke.color, egui::Stroke::NONE));
-    }
-    response
-}
-
-/// A thin level meter with a visible track, so it reads as a meter even in silence.
-fn level_bar(ui: &mut egui::Ui, level: f32) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(LEVEL_WIDTH, 5.0), egui::Sense::hover());
-    let painter = ui.painter();
-    painter.rect_filled(rect, 2.0, theme::GRID);
-    if level > 0.0 {
-        let lit = egui::Rect::from_min_size(rect.min, vec2(rect.width() * level.clamp(0.0, 1.0), rect.height()));
-        painter.rect_filled(lit, 2.0, theme::accent(3, 4));
-    }
-    response
+/// -60 dBFS..0 dBFS across a level bar.
+fn peak_to_fraction(peak: f32) -> f32 {
+    ((20.0 * peak.max(1e-6).log10() + 60.0) / 60.0).clamp(0.0, 1.0)
 }
 
 impl eframe::App for App {
@@ -682,14 +746,22 @@ impl eframe::App for App {
         self.preset_window(&ctx);
 
         self.update_levels();
-        egui::Panel::top("devices").show(ui, |ui| self.top_bar(ui));
-        if !self.banner_dismissed && !setup::cable_present(&self.devices.outputs) {
-            egui::Panel::top("cable_banner").show(ui, |ui| self.cable_banner(ui));
+        self.update_mic_levels();
+        if self.wizard.is_none() {
+            egui::Panel::top("devices").show(ui, |ui| self.top_bar(ui));
         }
         if !self.status.is_empty() {
             egui::Panel::top("status").show(ui, |ui| ui.colored_label(theme::ERROR, &self.status));
         }
         egui::CentralPanel::default().show(ui, |ui| {
+            if self.wizard.is_some() {
+                self.wizard_view(ui);
+                return;
+            }
+            if self.page == Page::Settings {
+                self.settings_view(ui);
+                return;
+            }
             let running = self.running();
             self.eq_panel.update(&self.settings.meters, running);
             let spectrum: Vec<f32> = if running { self.eq_panel.output_heights().collect() } else { Vec::new() };
@@ -734,7 +806,7 @@ impl eframe::App for App {
             .as_ref()
             .is_some_and(|p| p.lock().unwrap().outcome.is_none());
         let setting_up = matches!(self.setup, SetupState::Running(_)) || downloading;
-        let next = if self.running() {
+        let next = if self.running() || self.mic_monitor.is_some() {
             50
         } else if setting_up {
             200

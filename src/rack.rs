@@ -1,6 +1,7 @@
 //! The stage list, laid out like an FX chain rack: one framed row per stage with a fold
 //! arrow, bypass switch, name and live readout, and the stage's controls when unfolded.
 
+use crate::icons::cross_button;
 use crate::settings::{Item, Param, Removed, Section, Settings};
 use crate::theme;
 use egui::{Align, Align2, Color32, CursorIcon, FontId, Id, Layout, Rect, Response, Sense, Shape, Stroke, Ui, UiBuilder, pos2, vec2};
@@ -85,19 +86,6 @@ fn power_dot(ui: &mut Ui, on_t: f32, accent: Color32) -> Response {
         "Power",
         "Lit means the stage is on. Click to bypass it: the sound passes through untouched and it adds no delay. Handy for comparing with and without.",
     )
-}
-
-/// A small button with a painted ✕; egui's default fonts have no such glyph.
-pub fn cross_button(ui: &mut Ui) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
-    let visuals = ui.style().interact(&response);
-    let painter = ui.painter();
-    painter.rect(rect, visuals.corner_radius, visuals.weak_bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
-    let (c, r) = (rect.center(), 3.5);
-    let stroke = Stroke::new(1.5, visuals.fg_stroke.color);
-    painter.line_segment([c + vec2(-r, -r), c + vec2(r, r)], stroke);
-    painter.line_segment([c + vec2(-r, r), c + vec2(r, -r)], stroke);
-    response
 }
 
 /// Gap between a row's header and its controls; it folds away with them.
