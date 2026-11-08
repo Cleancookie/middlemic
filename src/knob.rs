@@ -7,8 +7,10 @@ use egui::{Color32, Pos2, Sense, Shape, Stroke, Ui, vec2};
 use std::f32::consts::PI;
 
 const SIZE: f32 = 46.0;
-/// Width a knob takes in a row, for callers that lay out by hand.
-pub const WIDTH: f32 = SIZE + 12.0;
+const INNER_WIDTH: f32 = SIZE + 12.0;
+const PAD: i8 = 5;
+/// Width a knob card (frame included) takes in a row, for callers that lay out by hand.
+pub const WIDTH: f32 = INNER_WIDTH + 2.0 * (PAD as f32 + 1.0);
 const RADIUS: f32 = 17.0;
 /// The dial sweeps 270 degrees, from bottom-left round the top to bottom-right.
 const START: f32 = 0.75 * PI;
@@ -39,10 +41,20 @@ fn turned(norm: f32, drag_up: f32, scroll_up: f32, fine: bool) -> Option<f32> {
     (delta != 0.0).then(|| (norm + delta).clamp(0.0, 1.0))
 }
 
-/// Draws the knob with its value underneath and `label` below that.
+/// Draws the knob with `label` above and its value below, all inside one framed card so the
+/// three read as one control in a grid.
 pub fn knob(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Response {
+    let card = egui::Frame::new()
+        .fill(theme::PLOT_BG)
+        .stroke(Stroke::new(1.0, theme::GRID))
+        .corner_radius(egui::CornerRadius::same(7))
+        .inner_margin(egui::Margin::same(PAD));
+    card.show(ui, |ui| dial(ui, param, label, color)).inner
+}
+
+fn dial(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Response {
     ui.vertical(|ui| {
-        ui.set_width(WIDTH);
+        ui.set_width(INNER_WIDTH);
         let caption = ui
             .vertical_centered(|ui| {
                 let text = egui::RichText::new(label.to_uppercase()).size(9.5).extra_letter_spacing(0.8).color(theme::TEXT_DIM);
@@ -50,7 +62,7 @@ pub fn knob(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Re
             })
             .inner;
         theme::param_tooltip(caption, param, HINT);
-        let (rect, response) = ui.allocate_exact_size(vec2(WIDTH, SIZE),Sense::click_and_drag());
+        let (rect, response) = ui.allocate_exact_size(vec2(INNER_WIDTH, SIZE), Sense::click_and_drag());
         let centre = rect.center();
 
         let fine = ui.input(|i| i.modifiers.shift);
