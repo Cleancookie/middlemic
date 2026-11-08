@@ -139,6 +139,8 @@ pub struct Section {
     pub open: AtomicBool,
     /// A problem the stage wants the user to see, such as a missing model file. Empty when fine.
     status: std::sync::Mutex<String>,
+    /// Delay this stage adds right now, in ms (`f32` bits). Written by the DSP thread.
+    latency_ms: AtomicU32,
 }
 
 impl Section {
@@ -160,7 +162,16 @@ impl Section {
             advanced: AtomicBool::new(false),
             open: AtomicBool::new(false),
             status: std::sync::Mutex::new(String::new()),
+            latency_ms: AtomicU32::new(0),
         }
+    }
+
+    pub fn latency_ms(&self) -> f32 {
+        f32::from_bits(self.latency_ms.load(Relaxed))
+    }
+
+    pub fn set_latency_ms(&self, ms: f32) {
+        self.latency_ms.store(ms.to_bits(), Relaxed);
     }
 
     pub fn status(&self) -> String {
@@ -573,6 +584,23 @@ impl Settings {
     /// The stages in running order.
     pub fn items(&self) -> Vec<Arc<Item>> {
         self.rack.lock().unwrap().items.clone()
+    }
+
+    /// Publish each stage's delay to its row. Ids not in the rack are skipped.
+    pub fn set_stage_latencies(&self, latencies: impl Iterator<Item = (u64, f32)>) {
+        let rack = self.rack.lock().unwrap();
+        for (id, ms) in latencies {
+            if let Some(item) = rack.items.iter().find(|i| i.id == id) {
+                item.section.set_latency_ms(ms);
+            }
+        }
+    }
+
+    /// Back to zero, for when the audio stops and no stage adds any delay.
+    pub fn clear_stage_latencies(&self) {
+        for item in self.items() {
+            item.section.set_latency_ms(0.0);
+        }
     }
 
     pub fn generation(&self) -> u64 {

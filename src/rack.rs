@@ -1,17 +1,15 @@
-//! The stage list, laid out like an FX chain rack: one framed row per stage with a fold
-//! arrow, bypass switch, name and live readout, and the stage's controls when unfolded.
+//! The stage list, laid out like an FX chain rack: one framed row per stage with a bypass
+//! switch, name, latency and remove cross. Click the row to unfold its controls; drag it to reorder.
 
 use crate::icons::cross_button;
 use crate::settings::{Item, Param, Removed, Section, Settings};
 use crate::theme;
 use egui::{Align, Align2, Color32, CursorIcon, FontId, Id, Layout, Rect, Response, Sense, Shape, Stroke, Ui, UiBuilder, pos2, vec2};
-use std::f32::consts::FRAC_PI_2;
 use std::sync::atomic::Ordering;
 
 /// Gain-reduction bars span 0..this many dB.
 const REDUCTION_RANGE_DB: f32 = 24.0;
-/// Below this the header shows nothing, so it only lights up when the stage is working.
-const REDUCTION_SHOWN_DB: f32 = 0.5;
+const HEADER_HEIGHT: f32 = 22.0;
 /// How long "Undo" stays offered after a stage is removed.
 const UNDO_SECONDS: f64 = 5.0;
 
@@ -39,40 +37,12 @@ fn reductions_this_frame(ui: &Ui, section: &Section) -> Vec<f32> {
 /// The parts of a row you can interact with, so callers and tests can find them.
 #[cfg_attr(not(test), allow(dead_code))]
 pub struct RackHeader {
-    pub grip: Response,
-    pub arrow: Response,
+    /// The row's header strip: click to fold, drag to reorder.
+    pub header: Response,
     pub power: Response,
     pub remove: Response,
     /// The whole row, header and body.
     pub rect: Rect,
-}
-
-/// Three bars to grab. Drawn, not a font glyph, so it never shows up as a missing-character box.
-fn grip_handle(ui: &mut Ui) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(14.0, 18.0), Sense::drag());
-    let active = response.hovered() || response.dragged();
-    let color = if active { theme::TEXT } else { theme::TEXT_DIM };
-    for dy in [-4.0, 0.0, 4.0] {
-        ui.painter().line_segment(
-            [rect.center() + vec2(-5.0, dy), rect.center() + vec2(5.0, dy)],
-            Stroke::new(1.5, color),
-        );
-    }
-    theme::help_tooltip(
-        response.on_hover_cursor(CursorIcon::Grab),
-        "Reorder",
-        "Drag this handle up or down to change the order the stages run in. Each stage hears the output of the one above it.",
-    )
-}
-
-/// A chevron that turns from pointing right to pointing down as `openness` goes 0 to 1.
-fn fold_arrow(ui: &mut Ui, openness: f32) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
-    let color = if response.hovered() { theme::TEXT } else { theme::TEXT_DIM };
-    let turn = egui::emath::Rot2::from_angle(openness * FRAC_PI_2);
-    let points = [vec2(-2.5, -4.0), vec2(2.0, 0.0), vec2(-2.5, 4.0)].map(|p| rect.center() + turn * p);
-    ui.painter().add(Shape::line(points.to_vec(), Stroke::new(1.8, color)));
-    theme::help_tooltip(response, "Fold or unfold", "Shows or hides this stage's controls. Folding does not turn the stage off.")
 }
 
 /// The bypass switch: a ring that fills with a dot of the accent colour when the stage is on.
@@ -130,6 +100,33 @@ fn gap_line_y(gap: usize, rows: &[Rect]) -> f32 {
 
 const ROW_RADIUS: u8 = 8;
 
+fn latency_text(ms: f32) -> String {
+    if ms >= 9.5 { format!("{ms:.0} ms") } else if ms > 0.0 { format!("{ms:.1} ms") } else { "0 ms".to_string() }
+}
+
+/// Advanced and Reset, at the top of an unfolded row.
+fn stage_buttons(ui: &mut Ui, section: &Section) {
+    ui.horizontal(|ui| {
+        if !section.simple.is_empty() {
+            let mut advanced = section.advanced.load(Ordering::Relaxed);
+            let toggle = ui.checkbox(&mut advanced, "Advanced");
+            if toggle.changed() {
+                section.advanced.store(advanced, Ordering::Relaxed);
+            }
+            theme::help_tooltip(toggle, "Advanced", "Off: a single simple control does the job. On: every setting is yours to tune.");
+        }
+        let reset = ui.small_button("Reset");
+        if reset.clicked() {
+            section.reset();
+        }
+        theme::help_tooltip(
+            reset,
+            "Reset stage",
+            "Puts every control of this stage back to its starting value, including its on/off switch and Simple mode.",
+        );
+    });
+}
+
 /// One row of the rack, outlined in `accent` (grey when bypassed). `body` runs only when
 /// unfolded and gets the gain reduction (dB) of each of the stage's meters. Widget ids inside
 /// are scoped to the item, so two stages of one kind never share state.
@@ -140,7 +137,6 @@ pub fn rack_item(ui: &mut Ui, item: &Item, accent: Color32, body: impl FnOnce(&m
 fn item_row(ui: &mut Ui, item: &Item, accent: Color32, body: impl FnOnce(&mut Ui, &[f32])) -> RackHeader {
     let section = &item.section;
     let reductions = reductions_this_frame(ui, section);
-    let worst = reductions.iter().copied().fold(0.0, f32::max);
     let open = section.open.load(Ordering::Relaxed);
     let on = section.is_enabled();
     let id = ui.make_persistent_id("row");
@@ -154,65 +150,53 @@ fn item_row(ui: &mut Ui, item: &Item, accent: Color32, body: impl FnOnce(&mut Ui
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            let header = ui.horizontal(|ui| {
-                    let grip = grip_handle(ui);
-                    let arrow = fold_arrow(ui, open_t);
-                    let power = power_dot(ui, on_t, accent);
-                    if power.clicked() {
-                        section.enabled.store(!on, Ordering::Relaxed);
-                    }
-
-                    let color = theme::TEXT_DIM.lerp_to_gamma(accent, on_t);
-                    let name = egui::RichText::new(item.name.to_uppercase())
-                        .strong()
-                        .size(13.0)
-                        .extra_letter_spacing(1.0)
-                        .color(color);
-                    let title = ui.add(egui::Label::new(name).sense(Sense::click()));
-                    theme::help_tooltip_with_hint(title.clone(), &item.name, section.help, "Click to fold or unfold");
-                    if arrow.clicked() || title.clicked() {
-                        section.open.store(!open, Ordering::Relaxed);
-                    }
-
-                    let remove = ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let remove = theme::help_tooltip(
-                            cross_button(ui),
-                            "Remove",
-                            "Takes this stage out of the rack. An Undo link appears for a few seconds.",
-                        );
-                        let reset = ui.small_button("Reset");
-                        if reset.clicked() {
-                            section.reset();
-                        }
-                        theme::help_tooltip(
-                            reset,
-                            "Reset stage",
-                            "Puts every control of this stage back to its starting value, including its on/off switch and Simple mode.",
-                        );
-                        if !section.simple.is_empty() {
-                            let mut advanced = section.advanced.load(Ordering::Relaxed);
-                            let toggle = ui.checkbox(&mut advanced, "Advanced");
-                            if toggle.changed() {
-                                section.advanced.store(advanced, Ordering::Relaxed);
-                            }
-                            theme::help_tooltip(
-                                toggle,
-                                "Advanced",
-                                "Off: a single simple control does the job. On: every setting is yours to tune.",
-                            );
-                        }
-                        if on && worst >= REDUCTION_SHOWN_DB {
-                            ui.colored_label(theme::WARN, format!("-{worst:.1} dB"));
-                        }
-                        remove
-                    });
-                    RackHeader { grip, arrow, power, remove: remove.inner, rect: Rect::NOTHING }
-                });
-            if open || open_t > 0.0 {
-                let top = header.response.rect.bottom();
-                fold_body(ui, id.with("body"), top, open_t, |ui| body(ui, &reductions));
+            // Claimed first so the power switch and cross, added later, sit on top of it.
+            let (strip, header) = ui.allocate_exact_size(vec2(ui.available_width(), HEADER_HEIGHT), Sense::click_and_drag());
+            let mut child = ui.new_child(UiBuilder::new().max_rect(strip).layout(Layout::left_to_right(Align::Center)));
+            let power = power_dot(&mut child, on_t, accent);
+            if power.clicked() {
+                section.enabled.store(!on, Ordering::Relaxed);
             }
-            header.inner
+            let color = theme::TEXT_DIM.lerp_to_gamma(accent, on_t);
+            child.label(
+                egui::RichText::new(item.name.to_uppercase())
+                    .strong()
+                    .size(13.0)
+                    .extra_letter_spacing(1.0)
+                    .color(color),
+            );
+            let remove = child
+                .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let remove = theme::help_tooltip(
+                        cross_button(ui),
+                        "Remove",
+                        "Takes this stage out of the rack. An Undo link appears for a few seconds.",
+                    );
+                    let delay = if on { latency_text(section.latency_ms()) } else { "off".to_string() };
+                    theme::help_tooltip(
+                        ui.label(egui::RichText::new(delay).color(theme::TEXT_DIM).monospace()),
+                        "Delay",
+                        "How much later your voice comes out because of this stage. Stages that react instantly add none.",
+                    );
+                    remove
+                })
+                .inner;
+            theme::help_tooltip_with_hint(
+                header.clone().on_hover_cursor(CursorIcon::PointingHand),
+                &item.name,
+                section.help,
+                "Click to fold or unfold · drag to reorder",
+            );
+            if header.clicked() {
+                section.open.store(!open, Ordering::Relaxed);
+            }
+            if open || open_t > 0.0 {
+                fold_body(ui, id.with("body"), strip.bottom(), open_t, |ui| {
+                    stage_buttons(ui, section);
+                    body(ui, &reductions);
+                });
+            }
+            RackHeader { header, power, remove, rect: Rect::NOTHING }
         });
 
     let rect = shown.response.rect;
@@ -264,9 +248,9 @@ fn add_row(ui: &mut Ui) -> (Rect, Option<&'static str>) {
 pub struct Rack {
     /// Position of the row being dragged.
     dragging: Option<usize>,
-    /// Where each row and its grip were drawn last frame, in running order.
+    /// Where each row and its header were drawn last frame, in running order.
     rows: Vec<Rect>,
-    grips: Vec<Rect>,
+    headers: Vec<Rect>,
     removes: Vec<Rect>,
     plus: Option<Rect>,
     undo_button: Option<Rect>,
@@ -278,7 +262,7 @@ impl Rack {
     /// Draws every stage as a row. `body` draws the controls of an unfolded row.
     pub fn show(&mut self, ui: &mut Ui, settings: &Settings, mut body: impl FnMut(&mut Ui, &Item, &[f32])) {
         self.rows.clear();
-        self.grips.clear();
+        self.headers.clear();
         self.removes.clear();
         let items = settings.items();
         let mut remove = None;
@@ -286,9 +270,9 @@ impl Rack {
             let accent = theme::accent(position, items.len());
             let header = rack_item(ui, item, accent, |ui, reductions| body(ui, item, reductions));
             self.rows.push(header.rect);
-            self.grips.push(header.grip.rect);
+            self.headers.push(header.header.rect);
             self.removes.push(header.remove.rect);
-            if header.grip.drag_started() {
+            if header.header.drag_started() {
                 self.dragging = Some(position);
             }
             if header.remove.clicked() {
@@ -426,7 +410,7 @@ mod tests {
     /// Runs frames of a one-row rack and remembers where the header controls were.
     struct Harness {
         ctx: egui::Context,
-        arrow: Cell<Rect>,
+        header: Cell<Rect>,
         power: Cell<Rect>,
         row: Cell<Rect>,
         body_drawn: Cell<bool>,
@@ -437,7 +421,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 ctx: egui::Context::default(),
-                arrow: Cell::new(Rect::NOTHING),
+                header: Cell::new(Rect::NOTHING),
                 power: Cell::new(Rect::NOTHING),
                 row: Cell::new(Rect::NOTHING),
                 body_drawn: Cell::new(false),
@@ -459,7 +443,7 @@ mod tests {
                     *self.shown_reductions.borrow_mut() = reductions.to_vec();
                     section_body(ui, section, reductions);
                 });
-                self.arrow.set(header.arrow.rect);
+                self.header.set(header.header.rect);
                 self.power.set(header.power.rect);
                 self.row.set(header.rect);
             });
@@ -539,8 +523,8 @@ mod tests {
             self.settings.items().iter().map(|i| i.name.clone()).collect()
         }
 
-        fn grip(&self, position: usize) -> Pos2 {
-            self.rack.borrow().grips[position].center()
+        fn header(&self, position: usize) -> Pos2 {
+            self.rack.borrow().headers[position].center()
         }
 
         fn row(&self, position: usize) -> Rect {
@@ -574,11 +558,11 @@ mod tests {
     }
 
     #[test]
-    fn dragging_a_grip_to_the_bottom_moves_that_stage_last() {
+    fn dragging_a_row_to_the_bottom_moves_that_stage_last() {
         let rows = Rows::new();
         rows.frame(vec![]);
-        let to = pos2(rows.grip(0).x, rows.row(2).bottom() + 6.0);
-        rows.drag(rows.grip(0), to, false);
+        let to = pos2(rows.header(0).x, rows.row(2).bottom() + 6.0);
+        rows.drag(rows.header(0), to, false);
         assert_eq!(rows.names(), ["B", "C", "A"]);
 
         // The list is now drawn in the new order: the old first stage is last.
@@ -590,8 +574,8 @@ mod tests {
     fn dragging_the_last_stage_to_the_top_moves_it_first() {
         let rows = Rows::new();
         rows.frame(vec![]);
-        let to = pos2(rows.grip(2).x, rows.row(0).top() - 3.0);
-        rows.drag(rows.grip(2), to, false);
+        let to = pos2(rows.header(2).x, rows.row(0).top() - 3.0);
+        rows.drag(rows.header(2), to, false);
         assert_eq!(rows.names(), ["C", "A", "B"]);
     }
 
@@ -600,8 +584,8 @@ mod tests {
         let rows = Rows::new();
         rows.frame(vec![]);
         let version = rows.settings.generation();
-        let to = pos2(rows.grip(1).x, rows.row(1).center().y + 4.0);
-        rows.drag(rows.grip(1), to, false);
+        let to = pos2(rows.header(1).x, rows.row(1).center().y + 4.0);
+        rows.drag(rows.header(1), to, false);
         assert_eq!(rows.names(), ["A", "B", "C"]);
         assert_eq!(rows.settings.generation(), version, "nothing for the audio thread to do");
     }
@@ -610,19 +594,18 @@ mod tests {
     fn escape_cancels_a_drag() {
         let rows = Rows::new();
         rows.frame(vec![]);
-        let to = pos2(rows.grip(0).x, rows.row(2).bottom() + 6.0);
-        rows.drag(rows.grip(0), to, true);
+        let to = pos2(rows.header(0).x, rows.row(2).bottom() + 6.0);
+        rows.drag(rows.header(0), to, true);
         assert_eq!(rows.names(), ["A", "B", "C"]);
     }
 
     #[test]
-    fn pressing_on_the_name_does_not_start_a_drag() {
+    fn clicking_a_row_without_moving_does_not_reorder() {
         let rows = Rows::new();
         rows.frame(vec![]);
-        let name = rows.row(0).center();
-        let to = pos2(name.x, rows.row(2).bottom() + 6.0);
-        rows.drag(name, to, false);
-        assert_eq!(rows.names(), ["A", "B", "C"], "only the grip drags");
+        rows.click(rows.header(0));
+        assert_eq!(rows.names(), ["A", "B", "C"]);
+        assert!(rows.settings.items()[0].section.open.load(Ordering::Relaxed), "a click unfolds it");
     }
 
     #[test]
@@ -739,15 +722,15 @@ mod tests {
     }
 
     #[test]
-    fn clicking_the_arrow_folds_and_unfolds() {
+    fn clicking_the_row_folds_and_unfolds() {
         let section = compressor_like();
         let h = Harness::new();
         h.frame(&section, vec![]);
-        h.click(&section, h.arrow.get().center());
+        h.click(&section, h.header.get().center());
         assert!(!section.open.load(Ordering::Relaxed), "first click folds");
         assert!(!h.body_drawn.get());
 
-        h.click(&section, h.arrow.get().center());
+        h.click(&section, h.header.get().center());
         assert!(section.open.load(Ordering::Relaxed), "second click unfolds");
         assert!(h.body_drawn.get());
     }

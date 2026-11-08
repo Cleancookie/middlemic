@@ -171,6 +171,11 @@ impl Chain {
         }
     }
 
+    /// Each stage's delay in samples; a bypassed stage adds none.
+    pub fn stage_latencies(&self) -> impl Iterator<Item = (u64, usize)> + '_ {
+        self.stages.iter().map(|(id, s)| (*id, if s.enabled() { s.latency_samples() } else { 0 }))
+    }
+
     pub fn latency_samples(&self) -> usize {
         self.stages
             .iter()
@@ -218,6 +223,10 @@ impl LiveChain {
 
     pub fn latency_samples(&self) -> usize {
         self.chain.latency_samples()
+    }
+
+    pub fn stage_latencies(&self) -> impl Iterator<Item = (u64, usize)> + '_ {
+        self.chain.stage_latencies()
     }
 
     /// Cheap unless the rack changed or a build finished.
