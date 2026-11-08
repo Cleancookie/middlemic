@@ -6,6 +6,7 @@ use realfft::{RealFftPlanner, RealToComplex};
 use std::f32::consts::PI;
 use std::sync::Arc;
 
+pub const SAMPLE_RATE: f32 = 48_000.0;
 pub const FFT_LEN: usize = 4096;
 pub const MIN_HZ: f32 = 20.0;
 pub const MAX_HZ: f32 = 20_000.0;

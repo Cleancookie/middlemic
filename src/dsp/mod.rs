@@ -62,13 +62,11 @@ pub fn default_sections() -> Vec<Section> {
     KINDS.iter().map(|(_, make)| make()).collect()
 }
 
-/// The frequency of the first enabled de-esser after the stage `id`, if any: where the EQ
-/// panel marks that the de-esser starts.
-pub fn deesser_after(items: &[Arc<Item>], id: u64) -> Option<f32> {
+/// The frequency of the first enabled de-esser, if any: where the spectrogram marks that the
+/// de-esser starts.
+pub fn first_deesser_hz(items: &[Arc<Item>]) -> Option<f32> {
     items
         .iter()
-        .skip_while(|i| i.id != id)
-        .skip(1)
         .find(|i| i.kind() == deesser::NAME && i.section.is_enabled())
         .map(|i| deesser::frequency_hz(&i.section))
 }
@@ -411,16 +409,17 @@ mod tests {
     }
 
     #[test]
-    fn the_eq_marks_the_first_enabled_de_esser_after_it() {
-        let settings = Settings::new(["EQ", "De-esser", "EQ", "De-esser", "De-esser"].map(|k| new_section(k).unwrap()).into());
+    fn the_spectrogram_marks_the_first_enabled_de_esser() {
+        let settings = Settings::new(["EQ", "De-esser", "De-esser"].map(|k| new_section(k).unwrap()).into());
         let items = settings.items();
         let hz = |i: usize| deesser::frequency_hz(&items[i].section);
-        items[3].section.enabled.store(false, Relaxed);
-        items[4].section.params[0].set(items[4].section.params[0].max);
-        assert_eq!(deesser_after(&items, items[0].id), Some(hz(1)));
-        assert_eq!(deesser_after(&items, items[2].id), Some(hz(4)), "the bypassed one is skipped");
-        assert_ne!(hz(1), hz(4));
-        assert_eq!(deesser_after(&items, items[4].id), None, "nothing after the last");
+        items[2].section.params[0].set(items[2].section.params[0].max);
+        assert_eq!(first_deesser_hz(&items), Some(hz(1)));
+        assert_ne!(hz(1), hz(2));
+        items[1].section.enabled.store(false, Relaxed);
+        assert_eq!(first_deesser_hz(&items), Some(hz(2)), "the bypassed one is skipped");
+        items[2].section.enabled.store(false, Relaxed);
+        assert_eq!(first_deesser_hz(&items), None);
     }
 
     /// Runs blocks until `done` says so, allowing a few seconds for a stage to build.

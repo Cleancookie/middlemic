@@ -39,6 +39,9 @@ The window is a rack of stages, in running order. Each row has a fold arrow, a p
 gain-reduction readout where it makes sense. Drag a row's grip to reorder the chain while it
 runs. Hover any control for a plain-language tip.
 
+A **Spectrum** pane along the bottom of the window shows your mic and the sound after the rack,
+plus a scrolling spectrogram with the de-esser's frequency marked. Click its header to fold it away.
+
 | Stage | What it does |
 | --- | --- |
 | **Feedback suppressor** | Spots speaker-to-mic howls by FFT and cuts each with a narrow notch that fades once the howl is gone. A strip shows each notch's pitch and depth. |
@@ -47,7 +50,7 @@ runs. Hover any control for a plain-language tip.
 | **DeepFilterNet** | The previous noise removal, kept to compare. Cheaper than DPDFNet, adds 30 ms, and removes more speech at the same cap. Off by default. |
 | **RNNoise** | A very cheap noise remover (about 1% of a core, 10 ms). Off by default. |
 | **Mic boost** | Plain gain. |
-| **EQ** | A plugin-style EQ: response curve over a live spectrum, draggable band dots, a row of knobs per band, and a scrolling spectrogram with the de-esser's frequency marked. |
+| **EQ** | A plugin-style EQ: response curve with draggable band dots and a row of knobs per band. |
 | **De-esser** | Tames harsh "s" sounds, with a gain-reduction meter. |
 | **Compressor** | A Maximus-style multiband compressor. Simple mode is one Amount slider plus Gentle, Voice and Strong; Advanced mode shows every dial. |
 | **Limiter** | A last stage that stops peaks clipping. |

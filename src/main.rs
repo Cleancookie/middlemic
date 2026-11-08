@@ -11,6 +11,7 @@ mod feedback_panel;
 mod icons;
 mod knob;
 mod level;
+mod live_spectrum;
 mod motion;
 #[cfg(test)]
 mod offline;

@@ -9,6 +9,7 @@ use crate::feedback_panel;
 use crate::presets::{self, Presets};
 use crate::icons::gear_button;
 use crate::level::{self, LevelMeter};
+use crate::live_spectrum::LiveSpectrum;
 use crate::rack::{Rack, section_body};
 use crate::recordings_panel::{self, Take};
 use crate::tape::{self, Player, Recorder};
@@ -144,6 +145,9 @@ struct App {
     /// The DPDFNet model download, while there is one to show.
     model_download: Option<Arc<Mutex<Progress>>>,
     eq_panel: EqPanel,
+    /// The one analyser behind the bottom pane and the compressor's backdrop.
+    spectrum: LiveSpectrum,
+    spectrum_open: bool,
     rack: Rack,
     settings: Arc<Settings>,
     devices: Devices,
@@ -196,6 +200,7 @@ enum Page {
 const SETUP_DONE_KEY: &str = "setup.done";
 const METER_FALL_KEY: &str = "meter.fall";
 const UPDATE_CHECK_KEY: &str = "update.check";
+const SPECTRUM_OPEN_KEY: &str = "spectrum.open";
 
 impl App {
     fn new(settings: Arc<Settings>, tray: Option<Tray>) -> Self {
@@ -237,6 +242,8 @@ impl App {
             setup: SetupState::Closed,
             model_download: None,
             eq_panel: EqPanel::default(),
+            spectrum: LiveSpectrum::default(),
+            spectrum_open: extras.get(SPECTRUM_OPEN_KEY).is_none_or(|v| v != "0"),
             rack: Rack::default(),
             settings,
             devices,
@@ -289,6 +296,19 @@ impl App {
         app
     }
 
+    /// Feeds the analyser, unless nothing on screen would show it.
+    fn update_spectrum(&mut self) {
+        let compressor_open = self
+            .settings
+            .items()
+            .iter()
+            .any(|i| i.kind() == dsp::multiband::NAME && i.section.open.load(std::sync::atomic::Ordering::Relaxed));
+        if self.spectrum_open || compressor_open {
+            let running = self.running() || self.player.is_some();
+            self.spectrum.update(&self.settings.meters, running);
+        }
+    }
+
     fn running(&self) -> bool {
         self.engine.as_ref().is_some_and(Engine::is_running)
     }
@@ -316,6 +336,7 @@ impl App {
         let mut extras = vec![
             (METER_FALL_KEY, fall.as_str()),
             (UPDATE_CHECK_KEY, if self.check_updates_on_launch { "1" } else { "0" }),
+            (SPECTRUM_OPEN_KEY, if self.spectrum_open { "1" } else { "0" }),
             ("device.input", self.input.as_str()),
             ("device.monitor", self.monitor.as_str()),
             ("device.output", self.output.as_str()),
@@ -1058,6 +1079,11 @@ impl eframe::App for App {
         if !self.status.is_empty() {
             egui::Panel::top("status").show(ui, |ui| ui.colored_label(theme::ERROR, &self.status));
         }
+        if self.wizard.is_none() && self.page == Page::Rack {
+            self.update_spectrum();
+            let deesser_hz = dsp::first_deesser_hz(&self.settings.items());
+            egui::Panel::bottom("spectrum").show(ui, |ui| self.spectrum.pane(ui, &mut self.spectrum_open, deesser_hz));
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             if self.wizard.is_some() {
                 self.wizard_view(ui);
@@ -1069,8 +1095,7 @@ impl eframe::App for App {
             }
             let running = self.running() || self.player.is_some();
             let mut tape_action = None;
-            self.eq_panel.update(&self.settings.meters, running);
-            let spectrum: Vec<f32> = if running { self.eq_panel.output_heights().collect() } else { Vec::new() };
+            let spectrum: Vec<f32> = if running { self.spectrum.output_heights().collect() } else { Vec::new() };
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // The rack, in running order. EQs, compressors and feedback suppressors have custom bodies.
                 let settings = Arc::clone(&self.settings);
@@ -1080,7 +1105,7 @@ impl eframe::App for App {
                 self.rack.show(ui, &settings, |ui, item, reductions| {
                     let section = &item.section;
                     if item.kind() == dsp::EQ_NAME {
-                        eq_panel.ui(ui, section, dsp::deesser_after(&items, item.id));
+                        eq_panel.ui(ui, section);
                     } else if item.kind() == dsp::multiband::NAME {
                         compressor_panel::ui(ui, section, reductions, &spectrum);
                     } else if item.kind() == dsp::feedback::NAME {
