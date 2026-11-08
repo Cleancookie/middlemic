@@ -31,6 +31,7 @@ deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", rev = "7b14b8
 
 [target.'cfg(windows)'.dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
+tray-icon = { version = "0.26.1", default-features = false }
 wasapi = "0.27.0"
 windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_System_Threading"] }
 

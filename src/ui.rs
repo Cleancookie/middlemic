@@ -17,6 +17,7 @@ use crate::settings_page;
 use crate::setup::{self, Progress};
 use crate::storage;
 use crate::theme;
+use crate::tray::{Action as TrayAction, Tray};
 use crate::update::{self, Status, Updater};
 use crate::wizard::{self, Wizard};
 use eframe::egui::{self, vec2};
@@ -51,10 +52,17 @@ pub fn run(settings: Arc<Settings>, minimized: bool) -> eframe::Result {
         options,
         Box::new(|cc| {
             theme::apply(&cc.egui_ctx);
+            let tray = Tray::new(&cc.egui_ctx);
             if minimized {
-                cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                // With a tray icon to bring it back, start hidden instead of on the taskbar.
+                let hide = if tray.is_some() {
+                    egui::ViewportCommand::Visible(false)
+                } else {
+                    egui::ViewportCommand::Minimized(true)
+                };
+                cc.egui_ctx.send_viewport_cmd(hide);
             }
-            Ok(Box::new(App::new(settings)))
+            Ok(Box::new(App::new(settings, tray)))
         }),
     )
 }
@@ -127,6 +135,9 @@ enum PresetDialog {
 }
 
 struct App {
+    /// None if Windows refused the icon; then the window's X really closes.
+    tray: Option<Tray>,
+    quitting: bool,
     presets: Presets,
     preset_dialog: PresetDialog,
     setup: SetupState,
@@ -187,7 +198,7 @@ const METER_FALL_KEY: &str = "meter.fall";
 const UPDATE_CHECK_KEY: &str = "update.check";
 
 impl App {
-    fn new(settings: Arc<Settings>) -> Self {
+    fn new(settings: Arc<Settings>, tray: Option<Tray>) -> Self {
         let save_path = crate::settings::settings_path();
         let saved = std::fs::read_to_string(&save_path).unwrap_or_default();
         let extras = settings.apply_text(&saved);
@@ -219,6 +230,8 @@ impl App {
         let presets = Presets::new(presets::presets_dir(), remembered);
 
         let mut app = Self {
+            tray,
+            quitting: false,
             presets,
             preset_dialog: PresetDialog::Closed,
             setup: SetupState::Closed,
@@ -701,6 +714,27 @@ impl App {
     }
 
     /// Listen to every mic while the wizard is on its microphone step, and only then.
+    fn handle_tray(&mut self, ctx: &egui::Context) {
+        let Some(tray) = &self.tray else { return };
+        for action in tray.poll() {
+            match action {
+                TrayAction::Show => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                TrayAction::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+        if !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+    }
+
     fn update_mic_levels(&mut self) {
         let listening = self.wizard.as_ref().is_some_and(|w| w.step() == wizard::Step::Mic);
         if !listening {
@@ -1011,6 +1045,7 @@ impl eframe::App for App {
         }
         self.save_if_changed();
         let ctx = ui.ctx().clone();
+        self.handle_tray(&ctx);
         self.setup_window(&ctx);
         self.preset_window(&ctx);
 

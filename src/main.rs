@@ -29,6 +29,8 @@ mod startup;
 mod tape;
 mod storage;
 mod theme;
+#[cfg(windows)]
+mod tray;
 mod update;
 #[cfg(windows)]
 mod ui;
