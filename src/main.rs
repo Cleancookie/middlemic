@@ -10,6 +10,7 @@ mod eq_panel;
 mod feedback_panel;
 mod icons;
 mod knob;
+mod level;
 #[cfg(test)]
 mod offline;
 mod playout;

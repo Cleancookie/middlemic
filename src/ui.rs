@@ -8,6 +8,7 @@ use crate::eq_panel::EqPanel;
 use crate::feedback_panel;
 use crate::presets::{self, Presets};
 use crate::icons::gear_button;
+use crate::level::{self, LevelMeter};
 use crate::rack::{Rack, section_body};
 use crate::settings::Settings;
 use crate::settings_page;
@@ -27,6 +28,7 @@ const METER_DECAY: f32 = 0.85;
 /// Narrower than this (in points, so DPI and zoom are already counted) the top bar uses two rows.
 const WIDE: f32 = 560.0;
 const LEVEL_WIDTH: f32 = 90.0;
+const LABEL_WIDTH: f32 = 40.0;
 const PRESET_WIDTH: f32 = 130.0;
 
 pub fn run(settings: Arc<Settings>, minimized: bool) -> eframe::Result {
@@ -135,8 +137,13 @@ struct App {
     output: String,
     engine: Option<Engine>,
     status: String,
-    in_level: f32,
-    out_level: f32,
+    in_meter: LevelMeter,
+    out_meter: LevelMeter,
+    /// Seconds a full level bar takes to fall; set in settings.
+    meter_fall: f32,
+    /// Listens to the chosen mic while the engine is stopped, so the Input bar is always live.
+    input_monitor: Option<(Option<String>, audio::MicMonitor)>,
+    last_levels: Option<Instant>,
     save_path: PathBuf,
     saved_text: String,
     last_save: Instant,
@@ -162,6 +169,7 @@ enum Page {
 }
 
 const SETUP_DONE_KEY: &str = "setup.done";
+const METER_FALL_KEY: &str = "meter.fall";
 
 impl App {
     fn new(settings: Arc<Settings>) -> Self {
@@ -202,8 +210,14 @@ impl App {
             output,
             engine: None,
             status: String::new(),
-            in_level: 0.0,
-            out_level: 0.0,
+            in_meter: LevelMeter::default(),
+            out_meter: LevelMeter::default(),
+            meter_fall: extras
+                .get(METER_FALL_KEY)
+                .and_then(|v| v.parse::<f32>().ok())
+                .map_or(level::DEFAULT_FALL_SECONDS, |v| v.clamp(*level::FALL_RANGE.start(), *level::FALL_RANGE.end())),
+            input_monitor: None,
+            last_levels: None,
             save_path,
             saved_text: saved,
             last_save: Instant::now(),
@@ -245,12 +259,14 @@ impl App {
 
     fn stop(&mut self) {
         self.engine = None; // Drop joins the threads.
-        self.in_level = 0.0;
-        self.out_level = 0.0;
+        self.out_meter.reset();
+        self.settings.clear_stage_latencies();
     }
 
     fn current_text(&self) -> String {
+        let fall = format!("{:.2}", self.meter_fall);
         let mut extras = vec![
+            (METER_FALL_KEY, fall.as_str()),
             ("device.input", self.input.as_str()),
             ("device.output", self.output.as_str()),
             ("preset", self.presets.current()),
@@ -435,15 +451,20 @@ impl App {
     fn readouts(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 3.0;
-            theme::help_tooltip(
-                theme::level_bar(ui, self.in_level, LEVEL_WIDTH),
+            let (input, output) = (self.in_meter.level(), self.out_meter.level());
+            level_row(
+                ui,
+                "Input",
+                input,
                 "Input level",
-                "How loud your mic is before processing. Aim for it to move well into the bar when you talk without sitting at the very end.",
+                "How loud your mic is before processing. Always live, even before you press Start. Aim for it to move well into the bar when you talk without sitting at the very end.",
             );
-            theme::help_tooltip(
-                theme::level_bar(ui, self.out_level, LEVEL_WIDTH),
+            level_row(
+                ui,
+                "Output",
+                output,
                 "Output level",
-                "How loud your voice is after the whole rack, as Discord and games hear it. It should look steadier than the input level.",
+                "How loud your voice is after the whole rack, as Discord and games hear it. Only moves while middlemic is started. It should look steadier than the input level.",
             );
         });
         ui.separator();
@@ -632,6 +653,7 @@ impl App {
         }
         if self.mic_monitor.is_none() {
             let names: Vec<String> = self.wizard_env_of_devices().mics().cloned().collect();
+            let names: Vec<Option<String>> = names.into_iter().map(Some).collect();
             self.mic_monitor = Some(audio::MicMonitor::start(&names));
         }
         let Some(monitor) = &self.mic_monitor else { return };
@@ -659,6 +681,7 @@ impl App {
                 output: &mut self.output,
                 running: self.engine.as_ref().is_some_and(Engine::is_running),
                 autostart: self.autostart,
+                meter_fall: &mut self.meter_fall,
                 storage: &self.storage,
                 error: &self.page_error,
             },
@@ -719,14 +742,40 @@ impl App {
         Ok(())
     }
 
+    /// The Input bar follows the engine when running and its own listener otherwise.
     fn update_levels(&mut self) {
+        let now = Instant::now();
+        let dt = self.last_levels.replace(now).map_or(0.05, |t| (now - t).as_secs_f32().min(0.25));
+        let wanted = self.wizard.is_none() && !self.running();
+        let device = (self.input != wizard::WINDOWS_DEFAULT).then(|| self.input.clone());
+        if !wanted || self.input_monitor.as_ref().is_some_and(|(d, _)| *d != device) {
+            self.input_monitor = None;
+        }
+        if wanted && self.input_monitor.is_none() {
+            let monitor = audio::MicMonitor::start(std::slice::from_ref(&device));
+            self.input_monitor = Some((device, monitor));
+        }
         let meters = &self.settings.meters;
-        self.in_level = peak_to_fraction(meters.take_input()).max(self.in_level * METER_DECAY);
-        self.out_level = peak_to_fraction(meters.take_output()).max(self.out_level * METER_DECAY);
+        let input = match &self.input_monitor {
+            Some((_, monitor)) => monitor.take_peaks().iter().map(|(_, p)| *p).fold(0.0, f32::max),
+            None => meters.take_input(),
+        };
+        let output = meters.take_output();
+        let fall = self.meter_fall;
+        self.in_meter.update(peak_to_fraction(input), dt, fall);
+        self.out_meter.update(if self.running() { peak_to_fraction(output) } else { 0.0 }, dt, fall);
     }
 }
 
 /// -60 dBFS..0 dBFS across a level bar.
+fn level_row(ui: &mut egui::Ui, label: &str, level: f32, title: &str, help: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.add_sized([LABEL_WIDTH, 12.0], egui::Label::new(egui::RichText::new(label).small().color(theme::TEXT_DIM)));
+        theme::help_tooltip(theme::level_bar(ui, level, LEVEL_WIDTH), title, help);
+    });
+}
+
 fn peak_to_fraction(peak: f32) -> f32 {
     ((20.0 * peak.max(1e-6).log10() + 60.0) / 60.0).clamp(0.0, 1.0)
 }
@@ -806,7 +855,7 @@ impl eframe::App for App {
             .as_ref()
             .is_some_and(|p| p.lock().unwrap().outcome.is_none());
         let setting_up = matches!(self.setup, SetupState::Running(_)) || downloading;
-        let next = if self.running() || self.mic_monitor.is_some() {
+        let next = if self.running() || self.mic_monitor.is_some() || self.input_monitor.is_some() {
             50
         } else if setting_up {
             200

@@ -282,18 +282,19 @@ pub struct MicMonitor {
 }
 
 impl MicMonitor {
-    pub fn start(names: &[String]) -> Self {
+    /// One listener per entry; `None` is the Windows default mic.
+    pub fn start(names: &[Option<String>]) -> Self {
         let running = Arc::new(AtomicBool::new(true));
         let mut monitor = Self { running: running.clone(), peaks: Vec::new(), handles: Vec::new() };
         for name in names {
             let peak = Arc::new(AtomicU32::new(0));
-            monitor.peaks.push((name.clone(), peak.clone()));
+            monitor.peaks.push((name.clone().unwrap_or_default(), peak.clone()));
             let (name, running) = (name.clone(), running.clone());
             monitor.handles.push(thread::spawn(move || {
                 let listen = || -> Result<()> {
                     initialize_mta().ok()?;
                     let enumerator = DeviceEnumerator::new()?;
-                    let device = find_device(&enumerator, Direction::Capture, Some(&name))?;
+                    let device = find_device(&enumerator, Direction::Capture, name.as_deref())?;
                     // Non-negative floats order like their bits, so a max on the bits is a max on the value.
                     pump_capture(&device, &running, |s| {
                         let loudest = s.iter().fold(0f32, |m, x| m.max(x.abs()));
@@ -350,7 +351,9 @@ fn dsp_loop(
             // Fraction of the 10 ms frame budget, lightly smoothed for the UI.
             load += (started.elapsed().as_secs_f32() / 0.010 - load) * 0.1;
             meters.set_load(load);
-            meters.set_latency_ms(chain.latency_samples() as f32 * 1000.0 / SAMPLE_RATE as f32);
+            let to_ms = 1000.0 / SAMPLE_RATE as f32;
+            meters.set_latency_ms(chain.latency_samples() as f32 * to_ms);
+            settings.set_stage_latencies(chain.stage_latencies().map(|(id, n)| (id, n as f32 * to_ms)));
             meters.record_output(peak(&mono));
             meters.output_scope.write(&mono);
             for (frame, s) in stereo.chunks_exact_mut(2).zip(mono) {

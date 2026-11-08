@@ -25,6 +25,8 @@ pub struct View<'a> {
     /// The pickers and the installer are locked while middlemic is running.
     pub running: bool,
     pub autostart: bool,
+    /// Seconds a full level bar takes to fall to empty.
+    pub meter_fall: &'a mut f32,
     pub storage: &'a [Entry],
     /// The outcome of the last action, if it failed.
     pub error: &'a str,
@@ -111,6 +113,14 @@ impl Page {
                 action = Some(Action::SetAutostart(autostart));
             }
 
+            section(ui, "Meters");
+            let fall = ui.add(egui::Slider::new(view.meter_fall, crate::level::FALL_RANGE).suffix(" s").text("Level bar fall time"));
+            theme::help_tooltip(
+                fall,
+                "Level bar fall time",
+                "How long the Input and Output bars take to drop from full to empty. Higher is slower and easier to read; the bars always jump up at once.",
+            );
+
             section(ui, "Storage");
             ui.label(RichText::new(format!("Kept in {}", storage::data_dir().display())).color(theme::TEXT_DIM));
             if view.storage.is_empty() {
@@ -177,7 +187,7 @@ mod tests {
             |ui| {
                 page.show(
                     ui,
-                    View { inputs: &inputs, outputs: &outputs, input: &mut input, output: &mut output, running: false, autostart: false, storage: entries, error: "" },
+                    View { inputs: &inputs, outputs: &outputs, input: &mut input, output: &mut output, running: false, autostart: false, meter_fall: &mut 1.5, storage: entries, error: "" },
                 );
                 right = ui.min_rect().right();
             },
