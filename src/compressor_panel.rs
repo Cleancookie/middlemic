@@ -11,6 +11,8 @@ use crate::theme;
 use egui::{Align2, Color32, CursorIcon, FontId, Id, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2};
 
 /// Strips in tab order.
+/// Gap between the meters, the knob grid and the transfer curve, now that no frame separates them.
+const GROUP_GAP: f32 = 14.0;
 const TABS: [usize; 4] = [MASTER, 0, 1, 2];
 const TAB_LABELS: [&str; 4] = ["MASTER", "LOW", "MID", "HIGH"];
 const DETECT_TIPS: [(&str, &str); 2] = [
@@ -255,14 +257,16 @@ fn strip_body(ui: &mut Ui, section: &Section, strip: usize, reduction: f32, [inp
     let (input, output) = (norm("in", input), norm("out", output));
     let color = strip_color(strip);
     ui.horizontal_wrapped(|ui| {
-        ui.group(|ui| {
+        // No outer frames: the knob cards already group each control, and a frame around them is a card in a card.
+        ui.scope(|ui| {
             ui.horizontal(|ui| {
                 meter_column(ui, p(field::INPUT), "In", input, Some(p(field::THRESHOLD).get()), color);
                 reduction_meter(ui, reduction);
                 meter_column(ui, p(field::OUTPUT), "Out", output, None, color);
             });
         });
-        ui.group(|ui| {
+        ui.add_space(GROUP_GAP);
+        ui.scope(|ui| {
             ui.vertical(|ui| {
                 let row = |ui: &mut Ui, knobs: &[(usize, &str)]| {
                     ui.horizontal(|ui| {
@@ -281,7 +285,8 @@ fn strip_body(ui: &mut Ui, section: &Section, strip: usize, reduction: f32, [inp
                 });
             });
         });
-        ui.group(|ui| {
+        ui.add_space(GROUP_GAP);
+        ui.scope(|ui| {
             ui.vertical(|ui| {
                 transfer_curve(ui, section, strip, input, reduction, color);
                 ui.horizontal(|ui| {
