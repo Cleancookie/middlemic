@@ -87,6 +87,14 @@ The gear in the top bar opens the settings page, which replaces the rack until y
 - **Launch when Windows starts**: adds a value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, so it needs no administrator permission, and starts middlemic minimised. It shows up in Task Manager's Startup apps.
 - **Storage**: lists what is in `%APPDATA%\middlemic` (models, presets, settings.ini) with sizes. Each has its own **Delete**. **Reset everything** deletes all of it, puts every setting back and runs the setup again, after you confirm on the page.
 - **VB-CABLE**: **Install / reinstall**, and **Run setup again**.
+- **Updates**: **Check for updates**, then **Download** and **Install and restart** as separate steps, so a download can wait for a good moment. A checkbox turns off the check at start. Settings, presets and models are kept.
+- **Meters**: how slowly the Input and Output level bars fall.
+
+## Releases and updates
+
+`make release` runs the tests, tags the next version from the commit emoji since the last tag (💥 major, ✨ minor, anything else patch; `V=v1.2.3` overrides) and pushes it. The `release` workflow then builds `middlemic.exe` on GitHub, with its `SHA256SUMS`, and publishes a release. Download `middlemic.exe` from the latest release and put it anywhere you can write to; there is no installer.
+
+A release build checks the latest release when it starts (one request to `api.github.com`, nothing else). A download is saved under `%APPDATA%\middlemic\updates` and only moved into place if its SHA-256 matches `SHA256SUMS`. Installing renames the running exe to `middlemic.exe.old`, copies the new one in, and starts it; the old file is deleted on the next launch. The checksum guards against a damaged download, not a compromised GitHub account. Local builds report as `dev` and never update. An exe in a folder you cannot write to (such as Program Files) cannot update itself.
 
 ## Build
 

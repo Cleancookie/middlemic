@@ -16,7 +16,7 @@ pub fn cable_present(playback_devices: &[String]) -> bool {
 
 /// Quote for a PowerShell single-quoted string. Avoids double quotes entirely, which
 /// Windows argument passing mangles.
-fn ps_quote(s: &str) -> String {
+pub(crate) fn ps_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
@@ -71,7 +71,7 @@ fn install_script(installer: &str) -> String {
 }
 
 #[cfg(windows)]
-pub use runner::{Progress, spawn_install, spawn_model_download};
+pub use runner::{Progress, powershell, spawn_install, spawn_model_download};
 
 #[cfg(windows)]
 mod runner {
@@ -120,7 +120,7 @@ mod runner {
         progress
     }
 
-    fn powershell(script: &str) -> Result<(i32, String)> {
+    pub fn powershell(script: &str) -> Result<(i32, String)> {
         let out = Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
             .creation_flags(CREATE_NO_WINDOW)

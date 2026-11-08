@@ -24,6 +24,7 @@ mod spectrum;
 mod startup;
 mod storage;
 mod theme;
+mod update;
 #[cfg(windows)]
 mod ui;
 mod wizard;

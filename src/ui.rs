@@ -15,6 +15,7 @@ use crate::settings_page;
 use crate::setup::{self, Progress};
 use crate::storage;
 use crate::theme;
+use crate::update::{self, Status, Updater};
 use crate::wizard::{self, Wizard};
 use eframe::egui::{self, vec2};
 use std::collections::HashMap;
@@ -141,6 +142,8 @@ struct App {
     out_meter: LevelMeter,
     /// Seconds a full level bar takes to fall; set in settings.
     meter_fall: f32,
+    updater: Updater,
+    check_updates_on_launch: bool,
     /// Listens to the chosen mic while the engine is stopped, so the Input bar is always live.
     input_monitor: Option<(Option<String>, audio::MicMonitor)>,
     last_levels: Option<Instant>,
@@ -170,6 +173,7 @@ enum Page {
 
 const SETUP_DONE_KEY: &str = "setup.done";
 const METER_FALL_KEY: &str = "meter.fall";
+const UPDATE_CHECK_KEY: &str = "update.check";
 
 impl App {
     fn new(settings: Arc<Settings>) -> Self {
@@ -218,6 +222,8 @@ impl App {
                 .map_or(level::DEFAULT_FALL_SECONDS, |v| v.clamp(*level::FALL_RANGE.start(), *level::FALL_RANGE.end())),
             input_monitor: None,
             last_levels: None,
+            updater: Updater::new(storage::data_dir().join("updates"), update::current_version()),
+            check_updates_on_launch: extras.get(UPDATE_CHECK_KEY).is_none_or(|v| v != "0"),
             save_path,
             saved_text: saved,
             last_save: Instant::now(),
@@ -232,6 +238,10 @@ impl App {
             mic_monitor: None,
             mic_levels: HashMap::new(),
         };
+        update::remove_previous_exe();
+        if app.check_updates_on_launch {
+            app.updater.check();
+        }
         if !app.setup_done {
             app.open_wizard();
         }
@@ -267,6 +277,7 @@ impl App {
         let fall = format!("{:.2}", self.meter_fall);
         let mut extras = vec![
             (METER_FALL_KEY, fall.as_str()),
+            (UPDATE_CHECK_KEY, if self.check_updates_on_launch { "1" } else { "0" }),
             ("device.input", self.input.as_str()),
             ("device.output", self.output.as_str()),
             ("preset", self.presets.current()),
@@ -282,6 +293,10 @@ impl App {
             return;
         }
         self.last_save = Instant::now();
+        self.write_settings();
+    }
+
+    fn write_settings(&mut self) {
         let text = self.current_text();
         if text != self.saved_text {
             if let Some(dir) = self.save_path.parent() {
@@ -487,6 +502,16 @@ impl App {
             "How hard your PC is working for middlemic. If it is high or you hear gaps, turn off heavy stages such as the AI noise removal.",
             &detail,
         );
+        let waiting = match self.updater.status() {
+            Status::Available(r) | Status::Ready(r, _) => Some(r.tag),
+            _ => None,
+        };
+        if let Some(tag) = waiting {
+            let link = ui.link(egui::RichText::new(format!("{tag} available")).color(theme::WARN));
+            if theme::help_tooltip(link, "Update available", "A newer middlemic has been released. Opens Settings, where you can download it and install it when you are ready.").clicked() {
+                self.open_settings();
+            }
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             self.start_stop(ui);
             let gear = gear_button(ui);
@@ -672,6 +697,8 @@ impl App {
 
     fn settings_view(&mut self, ui: &mut egui::Ui) {
         use settings_page::{Action, View};
+        let status = self.updater.status();
+        let update_error = self.updater.error();
         let action = self.settings_page.show(
             ui,
             View {
@@ -682,6 +709,12 @@ impl App {
                 running: self.engine.as_ref().is_some_and(Engine::is_running),
                 autostart: self.autostart,
                 meter_fall: &mut self.meter_fall,
+                update: settings_page::UpdateView {
+                    version: self.updater.current(),
+                    status: &status,
+                    error: &update_error,
+                    check_on_launch: self.check_updates_on_launch,
+                },
                 storage: &self.storage,
                 error: &self.page_error,
             },
@@ -709,6 +742,19 @@ impl App {
             Action::SetAutostart(on) => crate::startup::set_enabled(on),
             Action::Delete(path) => self.delete_stored(&path),
             Action::ResetEverything => self.reset_everything(),
+            Action::CheckUpdates => {
+                self.updater.check();
+                Ok(())
+            }
+            Action::DownloadUpdate => {
+                self.updater.download();
+                Ok(())
+            }
+            Action::InstallUpdate => self.install_update(),
+            Action::SetCheckOnLaunch(on) => {
+                self.check_updates_on_launch = on;
+                Ok(())
+            }
         };
         if let Err(why) = result {
             self.page_error = why;
@@ -717,6 +763,14 @@ impl App {
             self.autostart = crate::startup::is_enabled();
             self.storage = storage::list(&storage::data_dir());
         }
+    }
+
+    /// Stops the audio, saves, swaps the downloaded exe in and quits; the new one is already starting.
+    fn install_update(&mut self) -> Result<(), String> {
+        self.stop();
+        self.write_settings();
+        self.updater.install()?;
+        std::process::exit(0)
     }
 
     /// Delete one stored item. What the app keeps in memory is not written back over the deletion.
@@ -854,7 +908,7 @@ impl eframe::App for App {
             .model_download
             .as_ref()
             .is_some_and(|p| p.lock().unwrap().outcome.is_none());
-        let setting_up = matches!(self.setup, SetupState::Running(_)) || downloading;
+        let setting_up = matches!(self.setup, SetupState::Running(_)) || downloading || self.updater.is_busy();
         let next = if self.running() || self.mic_monitor.is_some() || self.input_monitor.is_some() {
             50
         } else if setting_up {

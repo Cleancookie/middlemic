@@ -4,6 +4,7 @@
 use crate::icons::refresh_button;
 use crate::storage::{self, Entry};
 use crate::theme;
+use crate::update::{self, Status};
 use egui::{ComboBox, RichText, Ui};
 use std::path::PathBuf;
 
@@ -15,6 +16,17 @@ pub enum Action {
     SetAutostart(bool),
     Delete(PathBuf),
     ResetEverything,
+    CheckUpdates,
+    DownloadUpdate,
+    InstallUpdate,
+    SetCheckOnLaunch(bool),
+}
+
+pub struct UpdateView<'a> {
+    pub version: &'a str,
+    pub status: &'a Status,
+    pub error: &'a str,
+    pub check_on_launch: bool,
 }
 
 pub struct View<'a> {
@@ -27,6 +39,7 @@ pub struct View<'a> {
     pub autostart: bool,
     /// Seconds a full level bar takes to fall to empty.
     pub meter_fall: &'a mut f32,
+    pub update: UpdateView<'a>,
     pub storage: &'a [Entry],
     /// The outcome of the last action, if it failed.
     pub error: &'a str,
@@ -60,6 +73,54 @@ fn picker(ui: &mut Ui, id: &str, label: &str, value: &mut String, choices: &[Str
         })
         .response;
     theme::help_tooltip(response, label, help);
+}
+
+/// Check, download and install are three buttons, so a download can wait for a good moment to restart.
+fn updates(ui: &mut Ui, view: &UpdateView) -> Option<Action> {
+    let mut action = None;
+    let release_build = update::is_release_build(view.version);
+    ui.label(RichText::new(format!("middlemic {}", if release_build { view.version } else { "(development build)" })).color(theme::TEXT_DIM));
+    let (line, busy) = match view.status {
+        _ if !release_build => ("Development builds do not update.".to_string(), true),
+        Status::Idle => ("Not checked yet.".into(), false),
+        Status::Checking => ("Checking…".into(), true),
+        Status::UpToDate => ("You are up to date.".into(), false),
+        Status::Available(r) => (format!("{} is available.", r.tag), false),
+        Status::Downloading(r) => (format!("Downloading {}…", r.tag), true),
+        Status::Ready(r, _) => (format!("{} is downloaded. Install it whenever suits you.", r.tag), false),
+    };
+    ui.label(line);
+    if !view.error.is_empty() {
+        ui.colored_label(theme::ERROR, view.error);
+    }
+    ui.horizontal_wrapped(|ui| {
+        let check = ui.add_enabled(!busy, egui::Button::new("Check for updates"));
+        theme::help_tooltip(check.clone(), "Check for updates", "Asks GitHub whether a newer middlemic has been released. Nothing is downloaded or installed.");
+        if check.clicked() {
+            action = Some(Action::CheckUpdates);
+        }
+        if let Status::Available(r) = view.status {
+            let download = ui.button(format!("Download {}", r.tag));
+            theme::help_tooltip(download.clone(), "Download", "Saves the new version and checks it against its published checksum. Nothing changes yet; middlemic keeps running as it is.");
+            if download.clicked() {
+                action = Some(Action::DownloadUpdate);
+            }
+        }
+        if let Status::Ready(r, _) = view.status {
+            let install = ui.button(format!("Install {} and restart", r.tag));
+            theme::help_tooltip(install.clone(), "Install", "Stops the audio, swaps in the downloaded version and restarts middlemic. Your settings and presets stay as they are.");
+            if install.clicked() {
+                action = Some(Action::InstallUpdate);
+            }
+        }
+    });
+    let mut on_launch = view.check_on_launch;
+    let launch = ui.checkbox(&mut on_launch, "Check for updates when middlemic starts");
+    theme::help_tooltip(launch, "Check on start", "Asks api.github.com for the latest release each time middlemic starts. That is the only thing it sends, and nothing is downloaded without you pressing Download.");
+    if on_launch != view.check_on_launch {
+        action = Some(Action::SetCheckOnLaunch(on_launch));
+    }
+    action
 }
 
 impl Page {
@@ -111,6 +172,11 @@ impl Page {
             theme::help_tooltip(launch, "Launch when Windows starts", "Starts middlemic minimised each time you sign in to Windows. No administrator permission needed. Untick it to stop.");
             if autostart != view.autostart {
                 action = Some(Action::SetAutostart(autostart));
+            }
+
+            section(ui, "Updates");
+            if let Some(found) = updates(ui, &view.update) {
+                action = Some(found);
             }
 
             section(ui, "Meters");
@@ -187,7 +253,7 @@ mod tests {
             |ui| {
                 page.show(
                     ui,
-                    View { inputs: &inputs, outputs: &outputs, input: &mut input, output: &mut output, running: false, autostart: false, meter_fall: &mut 1.5, storage: entries, error: "" },
+                    View { inputs: &inputs, outputs: &outputs, input: &mut input, output: &mut output, running: false, autostart: false, meter_fall: &mut 1.5, update: UpdateView { version: "dev", status: &Status::Idle, error: "", check_on_launch: true }, storage: entries, error: "" },
                 );
                 right = ui.min_rect().right();
             },
