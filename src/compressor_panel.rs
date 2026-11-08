@@ -274,7 +274,7 @@ fn strip_body(ui: &mut Ui, section: &Section, strip: usize, reduction: f32, [inp
                 row(ui, &[(field::THRESHOLD, "Threshold"), (field::KNEE, "Knee"), (field::RATIO, "Ratio")]);
                 row(ui, &[(field::ATTACK, "Attack"), (field::HOLD, "Hold"), (field::RELEASE, "Release")]);
                 ui.horizontal(|ui| {
-                    // Short labels: longer ones overlap at the 58 pt knob dial width; tooltips name them in full.
+                    // Short labels: longer ones overlap at the 58 pt knob width; tooltips name them in full.
                     knob(ui, p(field::FLOOR), "Floor", color);
                     knob(ui, p(field::FLOOR_RATIO), "Fl ratio", color);
                     knob(ui, &section.params[LOOKAHEAD], "Ahead", theme::TEXT_DIM);
@@ -304,7 +304,7 @@ fn strip_body(ui: &mut Ui, section: &Section, strip: usize, reduction: f32, [inp
 /// A vertical level meter over its gain knob. `mark_db` draws a tick, such as the threshold.
 fn meter_column(ui: &mut Ui, gain: &Param, label: &str, norm: f32, mark_db: Option<f32>, color: Color32) {
     ui.vertical(|ui| {
-        let (rect, _) = ui.allocate_exact_size(vec2(crate::knob::WIDTH, METER_HEIGHT), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(vec2(58.0, METER_HEIGHT), Sense::hover());
         let bar = Rect::from_center_size(rect.center(), vec2(METER_WIDTH, rect.height()));
         let painter = ui.painter();
         painter.rect(bar, 3.0, theme::PLOT_BG, Stroke::new(1.0, theme::GRID), StrokeKind::Outside);
