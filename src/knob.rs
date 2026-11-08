@@ -39,22 +39,15 @@ fn turned(norm: f32, drag_up: f32, scroll_up: f32, fine: bool) -> Option<f32> {
     (delta != 0.0).then(|| (norm + delta).clamp(0.0, 1.0))
 }
 
-/// Space under a knob's value, so it reads as belonging to the knob above it and not the label below.
-const ROW_GAP: f32 = 10.0;
+/// Space under a knob's label, between grid rows.
+const ROW_GAP: f32 = 8.0;
 
-/// Draws the knob with its value underneath and `label` below that.
+/// Draws the knob with `label` underneath; the label shows the value while hovered or dragged.
 pub fn knob(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Response {
     ui.vertical(|ui| {
         ui.set_width(WIDTH);
         // Label hugs its dial; the gap to the next row's label comes after the value instead.
         ui.spacing_mut().item_spacing.y = 0.0;
-        let caption = ui
-            .vertical_centered(|ui| {
-                let text = egui::RichText::new(label.to_uppercase()).size(9.5).extra_letter_spacing(0.8).color(theme::TEXT_DIM);
-                ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend))
-            })
-            .inner;
-        theme::param_tooltip(caption, param, HINT);
         let (rect, response) = ui.allocate_exact_size(vec2(WIDTH, SIZE),Sense::click_and_drag());
         let centre = rect.center();
 
@@ -92,8 +85,18 @@ pub fn knob(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Re
             Stroke::new(2.0, theme::TEXT),
         );
 
-        let text = theme::TEXT_DIM.lerp_to_gamma(theme::TEXT, hover);
-        ui.vertical_centered(|ui| ui.label(egui::RichText::new(param.display()).size(11.0).color(text)));
+        // Like Vital: only the label shows, and it gives way to the value while you point at or turn the knob.
+        let caption = ui
+            .vertical_centered(|ui| {
+                let text = if response.hovered() || response.dragged() {
+                    egui::RichText::new(param.display()).size(10.5).color(theme::TEXT)
+                } else {
+                    egui::RichText::new(label.to_uppercase()).size(9.5).extra_letter_spacing(0.8).color(theme::TEXT_DIM)
+                };
+                ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend).sense(Sense::hover()))
+            })
+            .inner;
+        theme::param_tooltip(caption, param, HINT);
         ui.add_space(ROW_GAP);
         theme::param_tooltip(response, param, HINT)
     })
