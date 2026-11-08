@@ -38,6 +38,56 @@ const GRID_FREQS: [(f32, &str); 7] = [
     (10_000.0, "10k"),
 ];
 
+/// The views of the bottom pane.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum Tab {
+    #[default]
+    Spectrum,
+    Takes,
+}
+
+impl Tab {
+    const ALL: [Tab; 2] = [Tab::Spectrum, Tab::Takes];
+
+    fn title(self) -> &'static str {
+        match self {
+            Tab::Spectrum => "SPECTRUM",
+            Tab::Takes => "TAKES",
+        }
+    }
+
+    fn tip_title(self) -> &'static str {
+        match self {
+            Tab::Spectrum => "Spectrum",
+            Tab::Takes => "Takes",
+        }
+    }
+
+    fn tip(self) -> &'static str {
+        match self {
+            Tab::Spectrum => "Live frequency view of your mic and of the sound after the whole rack, whichever stage is open.",
+            Tab::Takes => "Record your raw mic and play it back through the rack to hear every knob you move.",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Tab::Spectrum => "spectrum",
+            Tab::Takes => "takes",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Self {
+        Self::ALL.into_iter().find(|t| t.key() == key).unwrap_or_default()
+    }
+
+    /// Whether the analyser has anything to show: the spectrum tab when unfolded, or an open
+    /// compressor row, which draws the spectrum behind its curve.
+    pub fn needs_analysis(open: bool, tab: Tab, compressor_open: bool) -> bool {
+        (open && tab == Tab::Spectrum) || compressor_open
+    }
+}
+
 /// 0 at the spectrum floor, 1 at its top.
 fn spectrum_height(db: f32) -> f32 {
     ((db - FLOOR_DB) / (SPECTRUM_TOP_DB - FLOOR_DB)).clamp(0.0, 1.0)
@@ -115,20 +165,42 @@ impl LiveSpectrum {
         self.texture_stale = true;
     }
 
-    /// A clickable header that folds the displays away, then the displays when `open`.
-    pub fn pane(&mut self, ui: &mut Ui, open: &mut bool, deesser_hz: Option<f32>, load: Option<f32>) {
+    /// A header with a tab per view that folds the pane when clicked elsewhere, then the
+    /// selected view when `open`. `takes` draws the Takes tab.
+    pub fn pane(
+        &mut self,
+        ui: &mut Ui,
+        open: &mut bool,
+        tab: &mut Tab,
+        deesser_hz: Option<f32>,
+        load: Option<f32>,
+        takes: impl FnOnce(&mut Ui),
+    ) {
         let (rect, header) = ui.allocate_exact_size(vec2(ui.available_width(), HEADER_HEIGHT), Sense::click());
         let color = if header.hovered() { theme::TEXT } else { theme::TEXT_DIM };
         let c = pos2(rect.left() + 8.0, rect.center().y);
         let tip = if *open { [vec2(-4.0, -2.5), vec2(4.0, -2.5), vec2(0.0, 3.0)] } else { [vec2(-2.5, -4.0), vec2(-2.5, 4.0), vec2(3.0, 0.0)] };
         ui.painter().add(Shape::convex_polygon(tip.iter().map(|&v| c + v).collect(), color, Stroke::NONE));
-        ui.painter().text(
-            pos2(rect.left() + 20.0, rect.center().y),
-            Align2::LEFT_CENTER,
-            "SPECTRUM",
-            FontId::proportional(12.0),
-            color,
-        );
+        let mut x = rect.left() + 14.0;
+        for t in Tab::ALL {
+            let galley = ui.painter().layout_no_wrap(t.title().into(), FontId::proportional(12.0), Color32::PLACEHOLDER);
+            let slot = Rect::from_min_size(pos2(x, rect.top()), vec2(galley.size().x + 12.0, rect.height()));
+            let response = ui.interact(slot, egui::Id::new(("pane-tab", t as u8)), Sense::click());
+            let selected = *open && *tab == t;
+            let text = if selected || response.hovered() { theme::TEXT } else { theme::TEXT_DIM };
+            let at = pos2(slot.left() + 6.0, rect.center().y - galley.size().y / 2.0);
+            if selected {
+                let y = rect.bottom() - 1.0;
+                ui.painter().line_segment([pos2(slot.left() + 6.0, y), pos2(slot.right() - 6.0, y)], Stroke::new(2.0, theme::accent(2, 4)));
+            }
+            ui.painter().galley(at, galley, text);
+            if response.clicked() {
+                *tab = t;
+                *open = true;
+            }
+            theme::help_tooltip(response.on_hover_cursor(egui::CursorIcon::PointingHand), t.tip_title(), t.tip());
+            x = slot.right();
+        }
         if let Some(load) = load {
             ui.painter().text(
                 pos2(rect.right() - 6.0, rect.center().y),
@@ -143,12 +215,15 @@ impl LiveSpectrum {
         }
         theme::help_tooltip_with_hint(
             header.on_hover_cursor(egui::CursorIcon::PointingHand),
-            "Spectrum",
-            "Live frequency view of your mic and of the sound after the whole rack, whichever stage is open. The figure on the right is the processing load of all stages together, as a share of one CPU core.",
+            "Bottom pane",
+            "The figure on the right is the processing load of all stages together, as a share of one CPU core.",
             "Click to fold or unfold",
         );
         if *open {
-            self.ui(ui, deesser_hz);
+            match *tab {
+                Tab::Spectrum => self.ui(ui, deesser_hz),
+                Tab::Takes => takes(ui),
+            }
         }
     }
 
@@ -286,11 +361,40 @@ mod tests {
     fn the_header_folds_the_pane_and_the_displays_follow() {
         let (ctx, mut spectrum) = (egui::Context::default(), LiveSpectrum::default());
         let shapes = |open: &mut bool, spectrum: &mut LiveSpectrum| {
-            ctx.run_ui(egui::RawInput::default(), |ui| spectrum.pane(ui, open, None, Some(0.05))).shapes.len()
+            let mut tab = Tab::Spectrum;
+            ctx.run_ui(egui::RawInput::default(), |ui| spectrum.pane(ui, open, &mut tab, None, Some(0.05), |_| {})).shapes.len()
         };
         let (mut open, mut closed) = (true, false);
         assert!(shapes(&mut open, &mut spectrum) > shapes(&mut closed, &mut spectrum) + 10);
         assert!(!closed, "drawing alone never toggles it");
+    }
+
+    #[test]
+    fn the_takes_tab_draws_the_callers_content_instead_of_the_spectrum() {
+        let (ctx, mut spectrum) = (egui::Context::default(), LiveSpectrum::default());
+        let (mut open, mut tab, mut drawn) = (true, Tab::Takes, false);
+        let shapes = ctx
+            .run_ui(egui::RawInput::default(), |ui| spectrum.pane(ui, &mut open, &mut tab, None, None, |_| drawn = true))
+            .shapes
+            .len();
+        assert!(drawn && shapes < 15, "{shapes} shapes");
+    }
+
+    #[test]
+    fn tabs_round_trip_through_settings_and_unknown_falls_back() {
+        for t in Tab::ALL {
+            assert_eq!(Tab::from_key(t.key()), t);
+        }
+        assert_eq!(Tab::from_key("nonsense"), Tab::Spectrum);
+    }
+
+    #[test]
+    fn the_analyser_is_skipped_unless_something_shows_it() {
+        assert!(Tab::needs_analysis(true, Tab::Spectrum, false));
+        assert!(!Tab::needs_analysis(false, Tab::Spectrum, false), "folded");
+        assert!(!Tab::needs_analysis(true, Tab::Takes, false), "takes tab");
+        assert!(Tab::needs_analysis(true, Tab::Takes, true), "compressor row open");
+        assert!(Tab::needs_analysis(false, Tab::Takes, true));
     }
 
     #[test]

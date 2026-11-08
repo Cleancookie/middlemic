@@ -1,9 +1,9 @@
-//! The Record & playback section at the bottom of the rack. It only draws and returns what the
+//! The Takes tab of the bottom pane: record and play back. It only draws and returns what the
 //! user asked for; `ui.rs` does the recording, playing and rendering.
 
 use crate::icons::{play_button, record_button, stop_button, trash_button};
 use crate::theme;
-use egui::{CollapsingHeader, ComboBox, Rect, RichText, Sense, Ui, vec2};
+use egui::{ComboBox, Rect, RichText, Sense, Ui, vec2};
 use std::path::{Path, PathBuf};
 
 pub struct Take {
@@ -82,57 +82,55 @@ pub fn clock(seconds: f32) -> String {
 
 pub fn ui(ui: &mut Ui, mut view: View) -> Option<Action> {
     let mut action = None;
-    CollapsingHeader::new(RichText::new("Record & playback").strong()).id_salt("recordings").default_open(true).show(ui, |ui| {
-        ui.label(
-            RichText::new(
-                "Record your raw mic, then play it back through the rack above: every knob you move is heard on it. \
-                 Right-click a take to render it to a file.",
-            )
-            .color(theme::TEXT_DIM),
-        );
-        ui.horizontal(|ui| {
-            if let Some(seconds) = view.recording {
-                let stop = stop_button(ui);
-                if theme::help_tooltip(stop, "Stop recording", "Saves the take.").clicked() {
-                    action = Some(Action::StopRecording);
-                }
-                ui.colored_label(theme::ERROR, format!("Recording {}", clock(seconds)));
-            } else {
-                let record = record_button(ui, theme::ERROR);
-                let help = "Records your raw microphone, before any processing, to a new take. Nothing is sent to the output.";
-                if theme::help_tooltip(record, "Record", help).clicked() {
-                    action = Some(Action::Record);
-                }
-                ui.label("Record a take");
+    ui.label(
+        RichText::new(
+            "Record your raw mic, then play it back through the rack: every knob you move is heard on it. \
+             Right-click a take to render it to a file.",
+        )
+        .color(theme::TEXT_DIM),
+    );
+    ui.horizontal(|ui| {
+        if let Some(seconds) = view.recording {
+            let stop = stop_button(ui);
+            if theme::help_tooltip(stop, "Stop recording", "Saves the take.").clicked() {
+                action = Some(Action::StopRecording);
             }
-            ui.separator();
-            ui.label("Hear it on");
-            let shown = if view.monitor.is_empty() { crate::wizard::WINDOWS_DEFAULT } else { view.monitor.as_str() }.to_string();
-            let picker = ComboBox::from_id_salt("monitor").width(180.0).truncate().selected_text(shown).show_ui(ui, |ui| {
-                ui.selectable_value(view.monitor, crate::wizard::WINDOWS_DEFAULT.to_string(), crate::wizard::WINDOWS_DEFAULT);
-                for name in view.outputs {
-                    ui.selectable_value(view.monitor, name.clone(), name);
-                }
-            });
-            theme::help_tooltip(
-                picker.response,
-                "Hear it on",
-                "Where playback is heard. Choose your headphones or speakers. Do not choose CABLE Input or Discord will hear it.",
-            );
-            ui.checkbox(view.looping, "Loop");
+            ui.colored_label(theme::ERROR, format!("Recording {}", clock(seconds)));
+        } else {
+            let record = record_button(ui, theme::ERROR);
+            let help = "Records your raw microphone, before any processing, to a new take. Nothing is sent to the output.";
+            if theme::help_tooltip(record, "Record", help).clicked() {
+                action = Some(Action::Record);
+            }
+            ui.label("Record a take");
+        }
+        ui.separator();
+        ui.label("Hear it on");
+        let shown = if view.monitor.is_empty() { crate::wizard::WINDOWS_DEFAULT } else { view.monitor.as_str() }.to_string();
+        let picker = ComboBox::from_id_salt("monitor").width(180.0).truncate().selected_text(shown).show_ui(ui, |ui| {
+            ui.selectable_value(view.monitor, crate::wizard::WINDOWS_DEFAULT.to_string(), crate::wizard::WINDOWS_DEFAULT);
+            for name in view.outputs {
+                ui.selectable_value(view.monitor, name.clone(), name);
+            }
         });
-        if !view.message.is_empty() {
-            ui.label(RichText::new(view.message).color(theme::WARN));
-        }
-        if view.takes.is_empty() {
-            ui.label(RichText::new("No takes yet.").color(theme::TEXT_DIM));
-        }
-        for take in view.takes {
-            if let Some(found) = take_row(ui, take, &mut view) {
-                action = Some(found);
-            }
-        }
+        theme::help_tooltip(
+            picker.response,
+            "Hear it on",
+            "Where playback is heard. Choose your headphones or speakers. Do not choose CABLE Input or Discord will hear it.",
+        );
+        ui.checkbox(view.looping, "Loop");
     });
+    if !view.message.is_empty() {
+        ui.label(RichText::new(view.message).color(theme::WARN));
+    }
+    if view.takes.is_empty() {
+        ui.label(RichText::new("No takes yet.").color(theme::TEXT_DIM));
+    }
+    for take in view.takes {
+        if let Some(found) = take_row(ui, take, &mut view) {
+            action = Some(found);
+        }
+    }
     action
 }
 
@@ -203,7 +201,6 @@ mod tests {
         let (mut monitor, mut looping, mut delete_arm) = (String::new(), false, DeleteArm::default());
         let mut action = None;
         let out = ctx.run_ui(egui::RawInput::default(), |u| {
-            // Open by default in a fresh context, so the body is drawn.
             action = ui(u, View { takes, recording, playing: None, rendering: None, outputs: &[], monitor: &mut monitor, looping: &mut looping, delete_arm: &mut delete_arm, message });
         });
         let text = out

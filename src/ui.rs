@@ -10,7 +10,7 @@ use crate::presets::{self, Presets};
 use crate::icons::gear_button;
 use crate::latency::Latency;
 use crate::level::{self, LevelMeter};
-use crate::live_spectrum::LiveSpectrum;
+use crate::live_spectrum::{LiveSpectrum, Tab};
 use crate::rack::{Rack, section_body};
 use crate::recordings_panel::{self, Take};
 use crate::tape::{self, Player, Recorder};
@@ -34,6 +34,8 @@ const METER_DECAY: f32 = 0.85;
 /// Narrower than this (in points, so DPI and zoom are already counted) the top bar uses two rows.
 const WIDE: f32 = 560.0;
 const LEVEL_WIDTH: f32 = 90.0;
+/// The Takes tab scrolls beyond this, so a long list cannot push the rack off screen.
+const TAKES_MAX_HEIGHT: f32 = 180.0;
 const LABEL_WIDTH: f32 = 40.0;
 const PRESET_WIDTH: f32 = 130.0;
 
@@ -149,6 +151,7 @@ struct App {
     /// The one analyser behind the bottom pane and the compressor's backdrop.
     spectrum: LiveSpectrum,
     spectrum_open: bool,
+    pane_tab: Tab,
     rack: Rack,
     settings: Arc<Settings>,
     devices: Devices,
@@ -203,6 +206,7 @@ const SETUP_DONE_KEY: &str = "setup.done";
 const METER_FALL_KEY: &str = "meter.fall";
 const UPDATE_CHECK_KEY: &str = "update.check";
 const SPECTRUM_OPEN_KEY: &str = "spectrum.open";
+const PANE_TAB_KEY: &str = "spectrum.tab";
 
 impl App {
     fn new(settings: Arc<Settings>, tray: Option<Tray>) -> Self {
@@ -246,6 +250,7 @@ impl App {
             eq_panel: EqPanel::default(),
             spectrum: LiveSpectrum::default(),
             spectrum_open: extras.get(SPECTRUM_OPEN_KEY).is_none_or(|v| v != "0"),
+            pane_tab: extras.get(PANE_TAB_KEY).map_or_else(Tab::default, |v| Tab::from_key(v)),
             rack: Rack::default(),
             settings,
             devices,
@@ -306,7 +311,7 @@ impl App {
             .items()
             .iter()
             .any(|i| i.kind() == dsp::multiband::NAME && i.section.open.load(std::sync::atomic::Ordering::Relaxed));
-        if self.spectrum_open || compressor_open {
+        if Tab::needs_analysis(self.spectrum_open, self.pane_tab, compressor_open) {
             let running = self.running() || self.player.is_some();
             self.spectrum.update(&self.settings.meters, running);
         }
@@ -340,6 +345,7 @@ impl App {
             (METER_FALL_KEY, fall.as_str()),
             (UPDATE_CHECK_KEY, if self.check_updates_on_launch { "1" } else { "0" }),
             (SPECTRUM_OPEN_KEY, if self.spectrum_open { "1" } else { "0" }),
+            (PANE_TAB_KEY, self.pane_tab.key()),
             ("device.input", self.input.as_str()),
             ("device.monitor", self.monitor.as_str()),
             ("device.output", self.output.as_str()),
@@ -1095,7 +1101,31 @@ impl eframe::App for App {
             let items = self.settings.items();
             let deesser_hz = dsp::first_deesser_hz(&items);
             let load = self.running().then(|| crate::settings::total_load(&items));
-            egui::Panel::bottom("spectrum").show(ui, |ui| self.spectrum.pane(ui, &mut self.spectrum_open, deesser_hz, load));
+            let render_line = self.render_job.as_ref().map(|(path, p)| (path.clone(), p.lock().unwrap().message.clone()));
+            let mut tape_action = None;
+            egui::Panel::bottom("spectrum").show(ui, |ui| {
+                self.spectrum.pane(ui, &mut self.spectrum_open, &mut self.pane_tab, deesser_hz, load, |ui| {
+                    egui::ScrollArea::vertical().max_height(TAKES_MAX_HEIGHT).auto_shrink([false, true]).show(ui, |ui| {
+                        tape_action = recordings_panel::ui(
+                            ui,
+                            recordings_panel::View {
+                                takes: &self.takes,
+                                recording: self.recorder.as_ref().map(Recorder::seconds),
+                                playing: self.player.as_ref().map(|p| (p.path.as_path(), p.fraction())),
+                                rendering: render_line.as_ref().map(|(path, line)| (path.as_path(), line.as_str())),
+                                outputs: &self.devices.outputs,
+                                monitor: &mut self.monitor,
+                                looping: &mut self.loop_playback,
+                                delete_arm: &mut self.delete_arm,
+                                message: &self.tape_message,
+                            },
+                        );
+                    });
+                });
+            });
+            if let Some(action) = tape_action {
+                self.tape_action(action);
+            }
         }
         egui::CentralPanel::default().show(ui, |ui| {
             if self.wizard.is_some() {
@@ -1107,7 +1137,6 @@ impl eframe::App for App {
                 return;
             }
             let running = self.running() || self.player.is_some();
-            let mut tape_action = None;
             let spectrum: Vec<f32> = if running { self.spectrum.output_heights().collect() } else { Vec::new() };
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // The rack, in running order. EQs, compressors and feedback suppressors have custom bodies.
@@ -1141,26 +1170,7 @@ impl eframe::App for App {
                     "Reset all stages",
                     "Puts every control in every stage back to its starting value. The stages and their order stay as they are.",
                 );
-                ui.add_space(12.0);
-                let render_line = self.render_job.as_ref().map(|(path, p)| (path.clone(), p.lock().unwrap().message.clone()));
-                tape_action = recordings_panel::ui(
-                    ui,
-                    recordings_panel::View {
-                        takes: &self.takes,
-                        recording: self.recorder.as_ref().map(Recorder::seconds),
-                        playing: self.player.as_ref().map(|p| (p.path.as_path(), p.fraction())),
-                        rendering: render_line.as_ref().map(|(path, line)| (path.as_path(), line.as_str())),
-                        outputs: &self.devices.outputs,
-                        monitor: &mut self.monitor,
-                        looping: &mut self.loop_playback,
-                        delete_arm: &mut self.delete_arm,
-                        message: &self.tape_message,
-                    },
-                );
             });
-            if let Some(action) = tape_action {
-                self.tape_action(action);
-            }
         });
 
         // Meters need ~20 fps while running; otherwise just wake up to save settings.
