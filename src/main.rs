@@ -16,17 +16,22 @@ mod offline;
 mod playout;
 mod presets;
 mod rack;
+mod recordings_panel;
+mod render;
 mod settings;
 mod settings_page;
 mod setup;
 mod spectrum;
 #[cfg(windows)]
 mod startup;
+#[cfg(windows)]
+mod tape;
 mod storage;
 mod theme;
 mod update;
 #[cfg(windows)]
 mod ui;
+mod wav;
 mod wizard;
 
 use anyhow::Result;

@@ -56,6 +56,31 @@ pub fn gear_button(ui: &mut Ui) -> Response {
     })
 }
 
+/// A filled disc, for Record.
+pub fn record_button(ui: &mut Ui, color: egui::Color32) -> Response {
+    let side = ui.spacing().interact_size.y;
+    icon_button(ui, side, side * 0.26, |painter, c, r, _| {
+        painter.circle_filled(c, r, color);
+    })
+}
+
+/// A filled triangle pointing right, for Play.
+pub fn play_button(ui: &mut Ui) -> Response {
+    let side = ui.spacing().interact_size.y;
+    icon_button(ui, side, side * 0.26, |painter, c, r, stroke| {
+        let points = vec![c + vec2(-r * 0.7, -r), c + vec2(r, 0.0), c + vec2(-r * 0.7, r)];
+        painter.add(Shape::convex_polygon(points, stroke.color, Stroke::NONE));
+    })
+}
+
+/// A filled square, for Stop.
+pub fn stop_button(ui: &mut Ui) -> Response {
+    let side = ui.spacing().interact_size.y;
+    icon_button(ui, side, side * 0.24, |painter, c, r, stroke| {
+        painter.rect_filled(egui::Rect::from_center_size(c, Vec2::splat(r * 2.0)), 1.0, stroke.color);
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

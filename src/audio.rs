@@ -20,8 +20,8 @@ use wasapi::{
 
 const SAMPLE_RATE: usize = 48_000;
 /// 10 ms of mono audio.
-const FRAME: usize = SAMPLE_RATE / 100;
-const RING_FRAMES: usize = 20;
+pub(crate) const FRAME: usize = SAMPLE_RATE / 100;
+pub(crate) const RING_FRAMES: usize = 20;
 /// If the DSP backlog exceeds this, clocks have drifted: drop old audio to bound latency.
 const MAX_BACKLOG_FRAMES: usize = 10;
 /// The output waits for this much audio (50 ms of stereo) before it starts, and again after
@@ -61,7 +61,7 @@ pub fn list_devices() -> Result<Devices> {
 }
 
 /// Exact name wins, then a case-insensitive substring. `None` is the system default.
-fn find_device(
+pub(crate) fn find_device(
     enumerator: &DeviceEnumerator,
     direction: Direction,
     needle: Option<&str>,
@@ -86,7 +86,7 @@ fn find_device(
     partial.ok_or_else(|| anyhow!("no device matching {needle:?}; available: {seen:?}"))
 }
 
-fn lower_priority() {
+pub(crate) fn lower_priority() {
     use windows_sys::Win32::System::Threading::{
         GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
     };
@@ -226,7 +226,7 @@ fn ring_sink<'a>(ring: &'a mut impl Producer<Item = f32>, mut on_overflow: impl 
 
 /// Hand `sink` the mono 48 kHz `f32` samples of `device` until `running` clears. A loopback gets
 /// no data while the speakers are silent, so there a quiet wait is normal, not an error.
-fn pump_capture(
+pub(crate) fn pump_capture(
     device: &wasapi::Device,
     running: &AtomicBool,
     mut sink: impl FnMut(&[f32]),
@@ -368,7 +368,7 @@ fn dsp_loop(
     Ok(())
 }
 
-fn render_loop(
+pub(crate) fn render_loop(
     needle: Option<String>,
     mut ring: impl Consumer<Item = f32>,
     settings: Arc<Settings>,

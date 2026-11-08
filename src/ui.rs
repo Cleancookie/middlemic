@@ -10,6 +10,8 @@ use crate::presets::{self, Presets};
 use crate::icons::gear_button;
 use crate::level::{self, LevelMeter};
 use crate::rack::{Rack, section_body};
+use crate::recordings_panel::{self, Take};
+use crate::tape::{self, Player, Recorder};
 use crate::settings::Settings;
 use crate::settings_page;
 use crate::setup::{self, Progress};
@@ -143,6 +145,15 @@ struct App {
     /// Seconds a full level bar takes to fall; set in settings.
     meter_fall: f32,
     updater: Updater,
+    takes: Vec<Take>,
+    takes_scanned: Option<Instant>,
+    recorder: Option<Recorder>,
+    player: Option<Player>,
+    render_job: Option<(PathBuf, Arc<Mutex<Progress>>)>,
+    /// Where playback is heard; `WINDOWS_DEFAULT` is the Windows default output.
+    monitor: String,
+    loop_playback: bool,
+    tape_message: String,
     check_updates_on_launch: bool,
     /// Listens to the chosen mic while the engine is stopped, so the Input bar is always live.
     input_monitor: Option<(Option<String>, audio::MicMonitor)>,
@@ -198,6 +209,12 @@ impl App {
             .or_else(|| devices.outputs.iter().find(|n| n.contains("CABLE Input")).cloned())
             .unwrap_or_default();
 
+        let monitor = extras
+            .get("device.monitor")
+            .filter(|n| *n == wizard::WINDOWS_DEFAULT || devices.outputs.contains(n))
+            .cloned()
+            .unwrap_or_else(|| wizard::WINDOWS_DEFAULT.to_string());
+
         let remembered = extras.get("preset").map_or("", String::as_str);
         let presets = Presets::new(presets::presets_dir(), remembered);
 
@@ -222,6 +239,14 @@ impl App {
                 .map_or(level::DEFAULT_FALL_SECONDS, |v| v.clamp(*level::FALL_RANGE.start(), *level::FALL_RANGE.end())),
             input_monitor: None,
             last_levels: None,
+            takes: Vec::new(),
+            takes_scanned: None,
+            recorder: None,
+            player: None,
+            render_job: None,
+            monitor,
+            loop_playback: false,
+            tape_message: String::new(),
             updater: Updater::new(storage::data_dir().join("updates"), update::current_version()),
             check_updates_on_launch: extras.get(UPDATE_CHECK_KEY).is_none_or(|v| v != "0"),
             save_path,
@@ -279,6 +304,7 @@ impl App {
             (METER_FALL_KEY, fall.as_str()),
             (UPDATE_CHECK_KEY, if self.check_updates_on_launch { "1" } else { "0" }),
             ("device.input", self.input.as_str()),
+            ("device.monitor", self.monitor.as_str()),
             ("device.output", self.output.as_str()),
             ("preset", self.presets.current()),
         ];
@@ -765,9 +791,138 @@ impl App {
         }
     }
 
+    fn recordings_dir() -> PathBuf {
+        storage::data_dir().join("recordings")
+    }
+
+    /// Newest first.
+    fn scan_takes(&mut self) {
+        self.takes_scanned = Some(Instant::now());
+        let mut found: Vec<(std::time::SystemTime, Take)> = std::fs::read_dir(Self::recordings_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "wav"))
+            .filter_map(|e| {
+                let path = e.path();
+                let seconds = crate::wav::seconds(&path)?;
+                let name = path.file_stem()?.to_string_lossy().into_owned();
+                Some((e.metadata().ok()?.modified().ok()?, Take { path, name, seconds }))
+            })
+            .collect();
+        found.sort_by(|a, b| b.0.cmp(&a.0));
+        self.takes = found.into_iter().map(|(_, take)| take).collect();
+    }
+
+    fn monitor_device(&self) -> Option<String> {
+        (self.monitor != wizard::WINDOWS_DEFAULT).then(|| self.monitor.clone())
+    }
+
+    fn stop_playback(&mut self) {
+        self.player = None;
+        if !self.running() {
+            self.settings.clear_stage_latencies();
+        }
+    }
+
+    /// Collects what finished since the last frame: a recording that ended, a take that stopped
+    /// playing, a render that completed.
+    fn tape_tick(&mut self) {
+        if self.recorder.as_ref().is_some_and(|r| !r.is_running()) {
+            if let Some(Err(why)) = self.recorder.take().map(Recorder::finish) {
+                self.tape_message = why;
+            }
+            self.scan_takes();
+        }
+        if let Some(player) = &self.player {
+            if player.is_running() {
+                player.set_looping(self.loop_playback);
+            } else {
+                if let Some(why) = player.error() {
+                    self.tape_message = why;
+                }
+                self.stop_playback();
+            }
+        }
+        let finished = self.render_job.as_ref().and_then(|(_, p)| p.lock().unwrap().outcome.clone());
+        if let Some(outcome) = finished {
+            self.tape_message = match outcome {
+                Ok(name) => format!("Saved {name}."),
+                Err(why) => why,
+            };
+            self.render_job = None;
+            self.scan_takes();
+        }
+        if self.takes_scanned.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
+            self.scan_takes();
+        }
+    }
+
+    fn tape_action(&mut self, action: recordings_panel::Action) {
+        use recordings_panel::Action;
+        self.tape_message.clear();
+        match action {
+            Action::Record => {
+                self.stop_playback();
+                let mut n = 1;
+                let dir = Self::recordings_dir();
+                while dir.join(format!("Take {n}.wav")).exists() {
+                    n += 1;
+                }
+                let input = (self.input != wizard::WINDOWS_DEFAULT).then(|| self.input.clone());
+                match Recorder::start(input, dir.join(format!("Take {n}.wav"))) {
+                    Ok(recorder) => self.recorder = Some(recorder),
+                    Err(err) => self.tape_message = format!("{err:#}"),
+                }
+            }
+            Action::StopRecording => {
+                if let Some(Err(why)) = self.recorder.take().map(Recorder::finish) {
+                    self.tape_message = why;
+                }
+                self.scan_takes();
+            }
+            Action::Play(path) => {
+                if self.recorder.is_some() {
+                    self.tape_message = "Stop recording first.".into();
+                    return;
+                }
+                self.stop_playback();
+                match Player::start(path, self.monitor_device(), self.settings.clone(), self.loop_playback) {
+                    Ok(player) => self.player = Some(player),
+                    Err(err) => self.tape_message = format!("{err:#}"),
+                }
+            }
+            Action::StopPlayback => self.stop_playback(),
+            Action::Seek(fraction) => {
+                if let Some(player) = &self.player {
+                    player.seek(fraction);
+                }
+            }
+            Action::Render(path) => {
+                let target = crate::render::processed_name(&path);
+                let job = tape::spawn_render(self.settings.clone(), path.clone(), target);
+                self.render_job = Some((path, job));
+            }
+            Action::ShowInFolder(path) => {
+                let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{}", path.display())).spawn();
+            }
+            Action::Delete(path) => {
+                if self.player.as_ref().is_some_and(|p| p.path == path) {
+                    self.stop_playback();
+                }
+                if let Err(err) = std::fs::remove_file(&path) {
+                    self.tape_message = format!("could not delete {}: {err}", path.display());
+                }
+                self.scan_takes();
+            }
+        }
+    }
+
     /// Stops the audio, saves, swaps the downloaded exe in and quits; the new one is already starting.
     fn install_update(&mut self) -> Result<(), String> {
         self.stop();
+        self.recorder = None; // finishes the file
+        self.player = None;
         self.write_settings();
         self.updater.install()?;
         std::process::exit(0)
@@ -817,7 +972,7 @@ impl App {
         let output = meters.take_output();
         let fall = self.meter_fall;
         self.in_meter.update(peak_to_fraction(input), dt, fall);
-        self.out_meter.update(if self.running() { peak_to_fraction(output) } else { 0.0 }, dt, fall);
+        self.out_meter.update(if self.running() || self.player.is_some() { peak_to_fraction(output) } else { 0.0 }, dt, fall);
     }
 }
 
@@ -849,6 +1004,7 @@ impl eframe::App for App {
         self.preset_window(&ctx);
 
         self.update_levels();
+        self.tape_tick();
         self.update_mic_levels();
         if self.wizard.is_none() {
             egui::Panel::top("devices").show(ui, |ui| self.top_bar(ui));
@@ -865,7 +1021,8 @@ impl eframe::App for App {
                 self.settings_view(ui);
                 return;
             }
-            let running = self.running();
+            let running = self.running() || self.player.is_some();
+            let mut tape_action = None;
             self.eq_panel.update(&self.settings.meters, running);
             let spectrum: Vec<f32> = if running { self.eq_panel.output_heights().collect() } else { Vec::new() };
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -900,7 +1057,25 @@ impl eframe::App for App {
                     "Reset all stages",
                     "Puts every control in every stage back to its starting value. The stages and their order stay as they are.",
                 );
+                ui.add_space(12.0);
+                let render_line = self.render_job.as_ref().map(|(path, p)| (path.clone(), p.lock().unwrap().message.clone()));
+                tape_action = recordings_panel::ui(
+                    ui,
+                    recordings_panel::View {
+                        takes: &self.takes,
+                        recording: self.recorder.as_ref().map(Recorder::seconds),
+                        playing: self.player.as_ref().map(|p| (p.path.as_path(), p.fraction())),
+                        rendering: render_line.as_ref().map(|(path, line)| (path.as_path(), line.as_str())),
+                        outputs: &self.devices.outputs,
+                        monitor: &mut self.monitor,
+                        looping: &mut self.loop_playback,
+                        message: &self.tape_message,
+                    },
+                );
             });
+            if let Some(action) = tape_action {
+                self.tape_action(action);
+            }
         });
 
         // Meters need ~20 fps while running; otherwise just wake up to save settings.
@@ -909,7 +1084,7 @@ impl eframe::App for App {
             .as_ref()
             .is_some_and(|p| p.lock().unwrap().outcome.is_none());
         let setting_up = matches!(self.setup, SetupState::Running(_)) || downloading || self.updater.is_busy();
-        let next = if self.running() || self.mic_monitor.is_some() || self.input_monitor.is_some() {
+        let next = if self.running() || self.mic_monitor.is_some() || self.input_monitor.is_some() || self.recorder.is_some() || self.player.is_some() || self.render_job.is_some() {
             50
         } else if setting_up {
             200

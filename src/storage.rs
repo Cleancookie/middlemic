@@ -9,7 +9,7 @@ pub struct Entry {
 }
 
 /// The things worth listing on their own, as paths under the data directory.
-const KNOWN: [(&str, &str); 4] = [("AI models", "models"), ("Downloaded updates", "updates"), ("Presets", "presets"), ("Settings", "settings.ini")];
+const KNOWN: [(&str, &str); 5] = [("AI models", "models"), ("Recordings", "recordings"), ("Downloaded updates", "updates"), ("Presets", "presets"), ("Settings", "settings.ini")];
 
 pub fn data_dir() -> PathBuf {
     crate::settings::settings_path().parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf)
