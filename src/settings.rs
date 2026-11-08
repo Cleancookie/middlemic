@@ -431,11 +431,6 @@ impl Meters {
     }
 }
 
-/// The processing load of the enabled stages together, as a fraction of one core.
-pub fn total_load(items: &[Arc<Item>]) -> f32 {
-    items.iter().filter(|i| i.section.is_enabled()).map(|i| i.section.load()).sum()
-}
-
 /// `list` with the entry at position `from` moved into the gap before position `gap`
 /// (`0..=len`, where `len` means after the last).
 pub fn moved<T: Clone>(list: &[T], from: usize, gap: usize) -> Vec<T> {
@@ -805,14 +800,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn total_load_adds_up_only_the_enabled_stages() {
+    fn clearing_stage_stats_zeroes_latency() {
         let settings = Settings::new(vec![Section::new("A", vec![]), Section::new("B", vec![]), Section::new("C", vec![])]);
         let items = settings.items();
         settings.set_stage_stats(items.iter().map(|i| (i.id, 1.0, 0.25)));
-        items[2].section.enabled.store(false, Relaxed);
-        assert_eq!(total_load(&items), 0.5);
         settings.clear_stage_stats();
-        assert_eq!(total_load(&items), 0.0);
         assert_eq!(items[0].section.latency_ms(), 0.0);
     }
     use crate::dsp::new_section;

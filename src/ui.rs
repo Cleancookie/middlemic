@@ -1107,17 +1107,22 @@ impl eframe::App for App {
             self.update_spectrum();
             let items = self.settings.items();
             let deesser_hz = dsp::first_deesser_hz(&items);
-            let load = self.running().then(|| crate::settings::total_load(&items));
             let render_line = self.render_job.as_ref().map(|(path, p)| (path.clone(), p.lock().unwrap().message.clone()));
             let mut tape_action = None;
             // A folded pane gets its own id so it does not keep the dragged height as empty space.
             let open = self.spectrum_open;
-            egui::Panel::bottom(if open { "spectrum" } else { "spectrum-folded" })
-                .resizable(open)
-                .default_size(PANE_DEFAULT_HEIGHT)
-                .size_range(PANE_MIN_HEIGHT..=PANE_MAX_HEIGHT)
-                .show(ui, |ui| {
-                self.spectrum.pane(ui, &mut self.spectrum_open, &mut self.pane_tab, deesser_hz, load, |ui| {
+            let height = crate::live_spectrum::HEADER_HEIGHT;
+            let panel = egui::Panel::bottom(if open { "spectrum" } else { "spectrum-folded" }).resizable(open);
+            let panel = if open {
+                panel.default_size(PANE_DEFAULT_HEIGHT).size_range(PANE_MIN_HEIGHT..=PANE_MAX_HEIGHT)
+            } else {
+                // Folded: a one-line status bar, no padding.
+                panel
+                    .size_range(height..=height)
+                    .frame(egui::Frame::new().fill(ui.visuals().panel_fill).inner_margin(0))
+            };
+            panel.show(ui, |ui| {
+                self.spectrum.pane(ui, &mut self.spectrum_open, &mut self.pane_tab, deesser_hz, |ui| {
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                         tape_action = recordings_panel::ui(
                             ui,

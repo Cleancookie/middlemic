@@ -1,7 +1,6 @@
 //! The live analyser behind the bottom pane: the mic and the output as a spectrum, and a
 //! scrolling spectrogram of the output. One instance feeds every display, so the FFTs run once.
 
-use crate::latency::load_text;
 use crate::settings::Meters;
 use crate::spectrum::{
     Analyzer, FFT_LEN, FLOOR_DB, MAX_HZ, MIN_HZ, SAMPLE_RATE, freq_to_x, heat, to_columns,
@@ -16,7 +15,7 @@ use std::time::{Duration, Instant};
 /// The plot and spectrogram fill the pane's height; never smaller than this (points).
 const MIN_PLOT_HEIGHT: f32 = 50.0;
 const MIN_WIDTH: f32 = 160.0;
-const HEADER_HEIGHT: f32 = 22.0;
+pub const HEADER_HEIGHT: f32 = 22.0;
 /// Columns across the plot.
 const PLOT_POINTS: usize = 240;
 /// Spectrogram size in pixels: about ten seconds of history.
@@ -173,7 +172,6 @@ impl LiveSpectrum {
         open: &mut bool,
         tab: &mut Tab,
         deesser_hz: Option<f32>,
-        load: Option<f32>,
         takes: impl FnOnce(&mut Ui),
     ) {
         let (rect, header) = ui.allocate_exact_size(vec2(ui.available_width(), HEADER_HEIGHT), Sense::click());
@@ -201,23 +199,13 @@ impl LiveSpectrum {
             theme::help_tooltip(response.on_hover_cursor(egui::CursorIcon::PointingHand), t.tip_title(), t.tip());
             x = slot.right();
         }
-        if let Some(load) = load {
-            let text_rect = ui.painter().text(
-                pos2(rect.right() - 6.0, rect.center().y),
-                Align2::RIGHT_CENTER,
-                format!("all stages {}", load_text(load)),
-                FontId::monospace(11.0),
-                theme::TEXT_DIM,
-            );
-            theme::paint_divider(ui.painter(), pos2(text_rect.left() - 8.0, rect.center().y));
-        }
         if header.clicked() {
             *open = !*open;
         }
         theme::help_tooltip_with_hint(
             header.on_hover_cursor(egui::CursorIcon::PointingHand),
             "Bottom pane",
-            "The figure on the right is the processing load of all stages together, as a share of one CPU core.",
+            "The tabs below show the live spectrum and your recorded takes.",
             "Click to fold or unfold",
         );
         if *open {
@@ -363,7 +351,7 @@ mod tests {
         let (ctx, mut spectrum) = (egui::Context::default(), LiveSpectrum::default());
         let shapes = |open: &mut bool, spectrum: &mut LiveSpectrum| {
             let mut tab = Tab::Spectrum;
-            ctx.run_ui(egui::RawInput::default(), |ui| spectrum.pane(ui, open, &mut tab, None, Some(0.05), |_| {})).shapes.len()
+            ctx.run_ui(egui::RawInput::default(), |ui| spectrum.pane(ui, open, &mut tab, None, |_| {})).shapes.len()
         };
         let (mut open, mut closed) = (true, false);
         assert!(shapes(&mut open, &mut spectrum) > shapes(&mut closed, &mut spectrum) + 10);
@@ -375,7 +363,7 @@ mod tests {
         let (ctx, mut spectrum) = (egui::Context::default(), LiveSpectrum::default());
         let (mut open, mut tab, mut drawn) = (true, Tab::Takes, false);
         let shapes = ctx
-            .run_ui(egui::RawInput::default(), |ui| spectrum.pane(ui, &mut open, &mut tab, None, None, |_| drawn = true))
+            .run_ui(egui::RawInput::default(), |ui| spectrum.pane(ui, &mut open, &mut tab, None, |_| drawn = true))
             .shapes
             .len();
         assert!(drawn && shapes < 15, "{shapes} shapes");
