@@ -35,7 +35,10 @@ const METER_DECAY: f32 = 0.85;
 const WIDE: f32 = 560.0;
 const LEVEL_WIDTH: f32 = 90.0;
 /// The Takes tab scrolls beyond this, so a long list cannot push the rack off screen.
-const TAKES_MAX_HEIGHT: f32 = 180.0;
+/// The bottom pane's drag range and starting height (points).
+const PANE_DEFAULT_HEIGHT: f32 = 190.0;
+const PANE_MIN_HEIGHT: f32 = 90.0;
+const PANE_MAX_HEIGHT: f32 = 520.0;
 const LABEL_WIDTH: f32 = 40.0;
 const PRESET_WIDTH: f32 = 130.0;
 
@@ -1107,9 +1110,15 @@ impl eframe::App for App {
             let load = self.running().then(|| crate::settings::total_load(&items));
             let render_line = self.render_job.as_ref().map(|(path, p)| (path.clone(), p.lock().unwrap().message.clone()));
             let mut tape_action = None;
-            egui::Panel::bottom("spectrum").show(ui, |ui| {
+            // A folded pane gets its own id so it does not keep the dragged height as empty space.
+            let open = self.spectrum_open;
+            egui::Panel::bottom(if open { "spectrum" } else { "spectrum-folded" })
+                .resizable(open)
+                .default_size(PANE_DEFAULT_HEIGHT)
+                .size_range(PANE_MIN_HEIGHT..=PANE_MAX_HEIGHT)
+                .show(ui, |ui| {
                 self.spectrum.pane(ui, &mut self.spectrum_open, &mut self.pane_tab, deesser_hz, load, |ui| {
-                    egui::ScrollArea::vertical().max_height(TAKES_MAX_HEIGHT).auto_shrink([false, true]).show(ui, |ui| {
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                         tape_action = recordings_panel::ui(
                             ui,
                             recordings_panel::View {

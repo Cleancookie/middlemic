@@ -13,8 +13,8 @@ use egui::{
 };
 use std::time::{Duration, Instant};
 
-/// Plot and spectrogram heights are a share of their width, clamped (points).
-const HEIGHT: (f32, f32, f32) = (0.32, 90.0, 150.0);
+/// The plot and spectrogram fill the pane's height; never smaller than this (points).
+const MIN_PLOT_HEIGHT: f32 = 50.0;
 const MIN_WIDTH: f32 = 160.0;
 const HEADER_HEIGHT: f32 = 22.0;
 /// Columns across the plot.
@@ -232,7 +232,7 @@ impl LiveSpectrum {
     /// de-esser starts working on the spectrogram, if there is one.
     pub fn ui(&mut self, ui: &mut Ui, deesser_hz: Option<f32>) {
         let width = ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(MIN_WIDTH);
-        let size = vec2(width, (width * HEIGHT.0).clamp(HEIGHT.1, HEIGHT.2));
+        let size = vec2(width, ui.available_height().max(MIN_PLOT_HEIGHT));
         ui.horizontal_top(|ui| {
             self.plot(ui, size);
             self.spectrogram_view(ui, size, deesser_hz);
