@@ -100,6 +100,24 @@ fn gap_line_y(gap: usize, rows: &[Rect]) -> f32 {
 
 const ROW_RADIUS: u8 = 8;
 
+/// The Undo line fades in as the stage goes and out over its last moments.
+fn undo_opacity(seconds_left: f64) -> f32 {
+    const FADE: f64 = 0.25;
+    let (since, left) = (UNDO_SECONDS - seconds_left, seconds_left);
+    egui::emath::easing::cubic_out((since.min(left) / FADE).clamp(0.0, 1.0) as f32)
+}
+
+/// A rounded 3 pt line with a soft halo and a dot at each end.
+fn draw_insertion_line(ui: &Ui, x: egui::Rangef, y: f32) {
+    let painter = ui.painter();
+    let line = Rect::from_x_y_ranges(x, y - 1.5..=y + 1.5);
+    painter.rect_filled(line.expand(2.5), 4.0, theme::DEESSER.gamma_multiply(0.18));
+    painter.rect_filled(line, 1.5, theme::DEESSER);
+    for end in [x.min, x.max] {
+        painter.circle_filled(pos2(end, y), 3.5, theme::DEESSER);
+    }
+}
+
 fn latency_text(ms: f32) -> String {
     if ms >= 9.5 { format!("{ms:.0} ms") } else if ms > 0.0 { format!("{ms:.1} ms") } else { "0 ms".to_string() }
 }
@@ -299,8 +317,13 @@ impl Rack {
             return;
         }
         ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(until - now));
+        let fade = undo_opacity(until - now);
+        if fade < 1.0 {
+            ui.ctx().request_repaint();
+        }
         let link = ui
             .horizontal(|ui| {
+                ui.set_opacity(fade);
                 ui.label(egui::RichText::new(format!("Removed {}.", removed.item.name)).color(theme::TEXT_DIM));
                 ui.link("Undo")
             })
@@ -329,13 +352,23 @@ impl Rack {
         };
         ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
         let gap = drop_gap(pointer.y, &self.rows);
-        let y = gap_line_y(gap, &self.rows);
-        ui.painter().hline(
-            self.rows[0].x_range(),
-            y,
-            Stroke::new(3.0, theme::DEESSER),
-        );
+        let ctx = ui.ctx().clone();
+        let lift_id = ui.make_persistent_id("rack-drag-lift");
+        let lift = crate::motion::glide_from(&ctx, lift_id, 0.0, 1.0, 0.05, 0.05);
+        if let Some(row) = self.rows.get(from) {
+            ui.painter().rect_filled(*row, ROW_RADIUS, theme::BG.gamma_multiply(0.55 * lift));
+        }
+        // The line slides to its gap; frames come as fast as the screen only while it travels.
+        let line_id = ui.make_persistent_id("rack-drop-line");
+        let target = gap_line_y(gap, &self.rows);
+        let y = crate::motion::glide(&ctx, line_id, target, 0.035, 0.035);
+        if y != target {
+            ctx.request_repaint();
+        }
+        draw_insertion_line(ui, self.rows[0].x_range(), y);
         if released || cancelled {
+            crate::motion::forget(&ctx, line_id);
+            crate::motion::forget(&ctx, lift_id);
             if released && !cancelled {
                 settings.move_item(from, gap);
             }
@@ -747,6 +780,14 @@ mod tests {
 
         h.click(&section, h.power.get().center());
         assert!(section.is_enabled());
+    }
+
+    #[test]
+    fn undo_fades_in_then_out_and_is_solid_between() {
+        assert_eq!(undo_opacity(UNDO_SECONDS), 0.0);
+        assert_eq!(undo_opacity(UNDO_SECONDS / 2.0), 1.0);
+        assert!(undo_opacity(0.1) > 0.0 && undo_opacity(0.1) < 1.0);
+        assert_eq!(undo_opacity(0.0), 0.0);
     }
 
     #[test]

@@ -22,14 +22,24 @@ pub fn ease_toward(current: f32, target: f32, dt: f32, rise_tau: f32, fall_tau: 
 /// A value kept in egui memory under `id` that glides to `target`. The first call snaps.
 /// Asks for repaints only until it arrives.
 pub fn glide(ctx: &Context, id: Id, target: f32, rise_tau: f32, fall_tau: f32) -> f32 {
+    glide_from(ctx, id, target, target, rise_tau, fall_tau)
+}
+
+/// Like `glide`, but a value with no history starts at `start`, so it animates in.
+/// Forget a finished one with `forget`.
+pub fn glide_from(ctx: &Context, id: Id, start: f32, target: f32, rise_tau: f32, fall_tau: f32) -> f32 {
     let dt = ctx.input(|i| i.unstable_dt).min(0.1);
-    let current = ctx.data_mut(|d| *d.get_temp_mut_or(id, target));
+    let current = ctx.data_mut(|d| *d.get_temp_mut_or(id, start));
     let next = ease_toward(current, target, dt, rise_tau, fall_tau);
     ctx.data_mut(|d| d.insert_temp(id, next));
     if next != target {
         ctx.request_repaint_after(GLIDE_REPAINT);
     }
     next
+}
+
+pub fn forget(ctx: &Context, id: Id) {
+    ctx.data_mut(|d| d.remove_temp::<f32>(id));
 }
 
 /// Gain reduction bites fast and lets go slowly, like the compressor it is showing.
@@ -72,6 +82,20 @@ mod tests {
         }
         assert_eq!(v, 1.0);
         assert_eq!(ease_toward(3.0, 0.0, 0.05, 0.0, 0.0), 0.0, "zero tau is instant");
+    }
+
+    #[test]
+    fn glide_from_animates_in_and_forget_resets() {
+        let ctx = Context::default();
+        let id = Id::unique("from");
+        let mut out = vec![];
+        let _ = ctx.run_ui(egui::RawInput { predicted_dt: 0.05, ..Default::default() }, |_| {
+            out.push(glide_from(&ctx, id, 0.0, 1.0, 0.1, 0.1));
+            forget(&ctx, id);
+            out.push(glide_from(&ctx, id, 0.0, 1.0, 0.1, 0.1));
+        });
+        assert!(out[0] > 0.0 && out[0] < 1.0);
+        assert_eq!(out[0], out[1]);
     }
 
     #[test]
