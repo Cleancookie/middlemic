@@ -36,3 +36,9 @@ windows-sys = { version = "0.61.2", features = ["Win32_System_Console", "Win32_S
 
 [dev-dependencies]
 symphonia = { version = "0.6.1", default-features = false, features = ["aac", "isomp4"] }
+
+[profile.quick]
+inherits = "release"
+lto = false
+incremental = true
+codegen-units = 256
