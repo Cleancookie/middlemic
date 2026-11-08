@@ -33,14 +33,40 @@ pub fn accent(index: usize, count: usize) -> Color32 {
     RAMP[i].lerp_to_gamma(RAMP[i + 1], scaled - i as f32)
 }
 
+/// Where a level bar turns amber and then red, as shares of the -60..0 dBFS bar.
+const AMBER_FROM: f32 = 0.75;
+const RED_FROM: f32 = 0.92;
+const BAR_HEIGHT: f32 = 6.0;
+const CLIP_CAP: f32 = 5.0;
+
 /// A thin level meter with a visible track, so it reads as a meter even in silence.
 pub fn level_bar(ui: &mut Ui, level: f32, width: f32) -> Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 5.0), egui::Sense::hover());
+    level_bar_with_peak(ui, level, 0.0, false, width)
+}
+
+/// A level bar that turns amber then red near full scale, with a peak-hold `tick` above the
+/// bar and a red cap at the end of the track while `clipped`. Click it to clear the clip.
+pub fn level_bar_with_peak(ui: &mut Ui, level: f32, tick: f32, clipped: bool, width: f32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, BAR_HEIGHT), egui::Sense::click());
     let painter = ui.painter();
-    painter.rect_filled(rect, 2.0, GRID);
-    if level > 0.0 {
-        let lit = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * level.clamp(0.0, 1.0), rect.height()));
-        painter.rect_filled(lit, 2.0, accent(3, 4));
+    painter.rect_filled(rect, 3.0, GRID);
+    let x_at = |share: f32| rect.left() + rect.width() * share.clamp(0.0, 1.0);
+    let lit_to = x_at(level);
+    for (from, to, color) in [(0.0, AMBER_FROM, accent(3, 4)), (AMBER_FROM, RED_FROM, WARN), (RED_FROM, 1.0, ERROR)] {
+        let (x0, x1) = (x_at(from), x_at(to).min(lit_to));
+        if x1 > x0 {
+            let band = egui::Rect::from_x_y_ranges(x0..=x1, rect.y_range());
+            painter.with_clip_rect(band).rect_filled(rect, 3.0, color);
+        }
+    }
+    if tick > 0.02 {
+        let x = x_at(tick).clamp(rect.left() + 1.0, rect.right() - 1.0);
+        let color = if tick >= RED_FROM { ERROR } else if tick >= AMBER_FROM { WARN } else { TEXT };
+        painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], Stroke::new(1.5, color));
+    }
+    if clipped {
+        let cap = egui::Rect::from_x_y_ranges(rect.right() - CLIP_CAP..=rect.right(), rect.y_range());
+        painter.with_clip_rect(cap).rect_filled(rect, 3.0, ERROR);
     }
     response
 }

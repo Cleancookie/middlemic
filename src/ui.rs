@@ -492,21 +492,26 @@ impl App {
     fn readouts(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 3.0;
-            let (input, output) = (self.in_meter.level(), self.out_meter.level());
-            level_row(
+            let clear_in = level_row(
                 ui,
                 "Input",
-                input,
+                &self.in_meter,
                 "Input level",
                 "How loud your mic is before processing. Always live, even before you press Start. Aim for it to move well into the bar when you talk without sitting at the very end.",
             );
-            level_row(
+            let clear_out = level_row(
                 ui,
                 "Output",
-                output,
+                &self.out_meter,
                 "Output level",
                 "How loud your voice is after the whole rack, as Discord and games hear it. Only moves while middlemic is started. It should look steadier than the input level.",
             );
+            if clear_in {
+                self.in_meter.clear_clip();
+            }
+            if clear_out {
+                self.out_meter.clear_clip();
+            }
         });
         ui.separator();
         let cpu = self.cpu.percent();
@@ -977,12 +982,18 @@ impl App {
 }
 
 /// -60 dBFS..0 dBFS across a level bar.
-fn level_row(ui: &mut egui::Ui, label: &str, level: f32, title: &str, help: &str) {
+/// Returns true when the bar was clicked to clear its clip flag.
+fn level_row(ui: &mut egui::Ui, label: &str, meter: &LevelMeter, title: &str, help: &str) -> bool {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         ui.add_sized([LABEL_WIDTH, 12.0], egui::Label::new(egui::RichText::new(label).small().color(theme::TEXT_DIM)));
-        theme::help_tooltip(theme::level_bar(ui, level, LEVEL_WIDTH), title, help);
-    });
+        let bar = theme::level_bar_with_peak(ui, meter.level(), meter.tick(), meter.clipped(), LEVEL_WIDTH);
+        let hint = if meter.clipped() { "Red end: it hit full scale. Click to clear." } else { "" };
+        let clicked = bar.clicked();
+        theme::help_tooltip_with_hint(bar, title, help, hint);
+        clicked
+    })
+    .inner
 }
 
 fn peak_to_fraction(peak: f32) -> f32 {
