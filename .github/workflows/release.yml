@@ -1,0 +1,57 @@
+# Builds and publishes a release when a vX.Y.Z tag is pushed (`make release`).
+# The running app finds it through GitHub's "latest release", downloads middlemic.exe
+# and checks it against SHA256SUMS — see src/update.rs.
+name: release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  # Re-run for a tag that is already pushed: gh workflow run release.yml --ref vX.Y.Z
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The notes are the commits since the previous tag.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install the Windows cross toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+
+      - name: Test
+        run: cargo test --release
+
+      - name: Build
+        env:
+          MIDDLEMIC_VERSION: ${{ github.ref_name }}
+        run: cargo build --release --target x86_64-pc-windows-gnu
+
+      - name: Checksum
+        working-directory: target/x86_64-pc-windows-gnu/release
+        run: sha256sum middlemic.exe > SHA256SUMS
+
+      - name: Release notes
+        run: |
+          prev=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          git log --format='- %s' ${prev:+"$prev.."}"$GITHUB_REF_NAME" > notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME"
+          target/x86_64-pc-windows-gnu/release/middlemic.exe
+          target/x86_64-pc-windows-gnu/release/SHA256SUMS
+          --verify-tag --title "middlemic $GITHUB_REF_NAME" --notes-file notes.md
