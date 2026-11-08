@@ -2,6 +2,7 @@
 //! switch, name, latency and remove cross. Click the row to unfold its controls; drag it to reorder.
 
 use crate::icons::cross_button;
+use crate::latency::load_text;
 use crate::settings::{Item, Param, Removed, Section, Settings};
 use crate::theme;
 use egui::{Align, Align2, Color32, CursorIcon, FontId, Id, Layout, Rect, Response, Sense, Shape, Stroke, Ui, UiBuilder, pos2, vec2};
@@ -196,6 +197,13 @@ fn item_row(ui: &mut Ui, item: &Item, accent: Color32, body: impl FnOnce(&mut Ui
                         "Delay",
                         "How much later your voice comes out because of this stage. Stages that react instantly add none.",
                     );
+                    if on {
+                        theme::help_tooltip(
+                            ui.label(egui::RichText::new(load_text(section.load())).color(theme::TEXT_DIM).monospace()),
+                            "Processing load",
+                            "How much of one CPU core this stage needs to keep up with your voice, measured while middlemic runs. 100% would be too slow. This is not the CPU figure at the top, which covers the whole app.",
+                        );
+                    }
                     remove
                 })
                 .inner;

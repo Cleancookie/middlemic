@@ -2,6 +2,7 @@
 //! Fixed 48 kHz, mono in, stereo out, shared mode. Windows resamples via `autoconvert`.
 
 use crate::dsp;
+use crate::latency::{BLOCK_MS, CUSHION_MS};
 use crate::playout::{Fill, Playout};
 use crate::settings::Settings;
 use anyhow::{Result, anyhow};
@@ -20,13 +21,15 @@ use wasapi::{
 
 const SAMPLE_RATE: usize = 48_000;
 /// 10 ms of mono audio.
-pub(crate) const FRAME: usize = SAMPLE_RATE / 100;
+pub(crate) const FRAME: usize = SAMPLE_RATE / 1000 * BLOCK_MS;
 pub(crate) const RING_FRAMES: usize = 20;
 /// If the DSP backlog exceeds this, clocks have drifted: drop old audio to bound latency.
+/// WASAPI reports periods in 100 ns units.
+const HNS_PER_MS: f32 = 10_000.0;
 const MAX_BACKLOG_FRAMES: usize = 10;
 /// The output waits for this much audio (50 ms of stereo) before it starts, and again after
 /// running dry, so uneven delivery is absorbed instead of heard as gaps.
-const PLAYOUT_CUSHION_SAMPLES: usize = 5 * FRAME * 2;
+const PLAYOUT_CUSHION_SAMPLES: usize = SAMPLE_RATE / 1000 * CUSHION_MS * 2;
 
 pub struct Devices {
     pub inputs: Vec<String>,
@@ -190,6 +193,8 @@ fn capture_loop(
     let enumerator = DeviceEnumerator::new()?;
     let device = find_device(&enumerator, Direction::Capture, needle.as_deref())?;
     eprintln!("input:  {}", device.get_friendlyname()?);
+    let (period, _) = device.get_iaudioclient()?.get_device_period()?;
+    settings.meters.set_capture_buffer_ms(period as f32 / HNS_PER_MS);
     pump_capture(&device, &running, ring_sink(&mut ring, || settings.meters.record_dropout()), false)
 }
 
@@ -353,7 +358,7 @@ fn dsp_loop(
             meters.set_load(load);
             let to_ms = 1000.0 / SAMPLE_RATE as f32;
             meters.set_latency_ms(chain.latency_samples() as f32 * to_ms);
-            settings.set_stage_latencies(chain.stage_latencies().map(|(id, n)| (id, n as f32 * to_ms)));
+            settings.set_stage_stats(chain.stage_stats().map(|(id, n, load)| (id, n as f32 * to_ms, load)));
             meters.record_output(peak(&mono));
             meters.output_scope.write(&mono);
             for (frame, s) in stereo.chunks_exact_mut(2).zip(mono) {
@@ -393,6 +398,7 @@ pub(crate) fn render_loop(
     )?;
     let event = client.set_get_eventhandle()?;
     let render = client.get_audiorenderclient()?;
+    settings.meters.set_render_buffer_ms(client.get_buffer_size()? as f32 * 1000.0 / SAMPLE_RATE as f32);
 
     let mut samples: Vec<f32> = Vec::new();
     let mut bytes: Vec<u8> = Vec::new();

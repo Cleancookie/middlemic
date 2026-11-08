@@ -32,6 +32,7 @@ use crate::settings::{Item, Section, Settings};
 use anyhow::Result;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::{Duration, Instant};
 
 /// Every kind of stage with a maker for its controls, in the default rack's order.
 const KINDS: [(&str, fn() -> Section); 10] = [
@@ -88,7 +89,7 @@ fn build_stage(section: Arc<Section>, reference: Option<Reference>, sample_rate:
         other => anyhow::bail!("no stage is known for the section {other:?}"),
     };
     stage.prepare(sample_rate);
-    Ok(stage)
+    Ok(Box::new(Timed::new(stage, sample_rate)))
 }
 
 /// A chain of every stage in the rack, in running order, prepared for `sample_rate`. With
@@ -117,6 +118,60 @@ pub trait Processor: Send {
     /// Extra delay this stage adds, in samples.
     fn latency_samples(&self) -> usize {
         0
+    }
+
+    /// Smoothed share of real time `process` takes: 0.05 is 5% of one core. Only a
+    /// [`Timed`] stage measures it.
+    fn load(&self) -> f32 {
+        0.0
+    }
+}
+
+/// How much of each new measurement enters the smoothed load.
+const LOAD_SMOOTHING: f32 = 0.1;
+
+/// Wraps a stage to time its `process` calls. Two `Instant::now` calls per block, no
+/// allocation and no locks, so measuring costs nothing next to a stage that takes milliseconds.
+struct Timed {
+    inner: Box<dyn Processor>,
+    sample_rate: f32,
+    load: f32,
+}
+
+impl Timed {
+    fn new(inner: Box<dyn Processor>, sample_rate: u32) -> Self {
+        Self { inner, sample_rate: sample_rate as f32, load: 0.0 }
+    }
+}
+
+/// Wall time over the audio time it covered.
+fn load_of(elapsed: Duration, samples: usize, sample_rate: f32) -> f32 {
+    elapsed.as_secs_f32() * sample_rate / samples.max(1) as f32
+}
+
+impl Processor for Timed {
+    fn enabled(&self) -> bool {
+        self.inner.enabled()
+    }
+
+    fn prepare(&mut self, sample_rate: u32) {
+        self.sample_rate = sample_rate as f32;
+        self.inner.prepare(sample_rate);
+    }
+
+    fn process(&mut self, samples: &mut [f32]) {
+        let started = Instant::now();
+        self.inner.process(samples);
+        let seen = load_of(started.elapsed(), samples.len(), self.sample_rate);
+        self.load += (seen - self.load) * LOAD_SMOOTHING;
+    }
+
+    fn latency_samples(&self) -> usize {
+        self.inner.latency_samples()
+    }
+
+    fn load(&self) -> f32 {
+        self.load
     }
 }
 
@@ -169,9 +224,9 @@ impl Chain {
         }
     }
 
-    /// Each stage's delay in samples; a bypassed stage adds none.
-    pub fn stage_latencies(&self) -> impl Iterator<Item = (u64, usize)> + '_ {
-        self.stages.iter().map(|(id, s)| (*id, if s.enabled() { s.latency_samples() } else { 0 }))
+    /// Each stage's delay in samples and its load; a bypassed stage has neither.
+    pub fn stage_stats(&self) -> impl Iterator<Item = (u64, usize, f32)> + '_ {
+        self.stages.iter().map(|(id, s)| if s.enabled() { (*id, s.latency_samples(), s.load()) } else { (*id, 0, 0.0) })
     }
 
     pub fn latency_samples(&self) -> usize {
@@ -223,8 +278,8 @@ impl LiveChain {
         self.chain.latency_samples()
     }
 
-    pub fn stage_latencies(&self) -> impl Iterator<Item = (u64, usize)> + '_ {
-        self.chain.stage_latencies()
+    pub fn stage_stats(&self) -> impl Iterator<Item = (u64, usize, f32)> + '_ {
+        self.chain.stage_stats()
     }
 
     /// Cheap unless the rack changed or a build finished.
@@ -294,7 +349,6 @@ pub mod testutil {
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering::Relaxed;
-    use std::time::{Duration, Instant};
 
     fn boosted(db: f32) -> Gain {
         let s = Arc::new(gain::section());
@@ -420,6 +474,45 @@ mod tests {
         assert_eq!(first_deesser_hz(&items), Some(hz(2)), "the bypassed one is skipped");
         items[2].section.enabled.store(false, Relaxed);
         assert_eq!(first_deesser_hz(&items), None);
+    }
+
+    struct Sleepy(Duration);
+
+    impl Processor for Sleepy {
+        fn process(&mut self, _: &mut [f32]) {
+            std::thread::sleep(self.0);
+        }
+    }
+
+    #[test]
+    fn load_is_wall_time_over_the_audio_it_covered() {
+        let ten_ms = Duration::from_millis(10);
+        assert!((load_of(ten_ms, 480, 48_000.0) - 1.0).abs() < 1e-4, "10 ms of work on 10 ms of audio");
+        assert!((load_of(ten_ms / 4, 480, 48_000.0) - 0.25).abs() < 1e-4);
+        assert!(load_of(ten_ms, 0, 48_000.0).is_finite());
+    }
+
+    #[test]
+    fn a_timed_stage_reports_its_share_and_a_bypassed_one_none() {
+        let sleepy = Box::new(Sleepy(Duration::from_millis(2)));
+        let mut timed = Timed::new(sleepy, 48_000);
+        assert_eq!(timed.load(), 0.0, "nothing measured yet");
+        let mut block = [0f32; 480];
+        for _ in 0..60 {
+            timed.process(&mut block);
+        }
+        assert!((0.19..0.6).contains(&timed.load()), "2 ms per 10 ms block: {}", timed.load());
+
+        let section = Arc::new(gain::section());
+        let mut bypassed = Timed::new(Box::new(Gain::new(section.clone())), 48_000);
+        for _ in 0..20 {
+            bypassed.process(&mut block);
+        }
+        section.enabled.store(false, Relaxed);
+        let mut chain = Chain::new();
+        chain.push(1, timed).push(2, bypassed);
+        let stats: Vec<_> = chain.stage_stats().collect();
+        assert!(stats[0].2 > 0.19 && stats[1] == (2, 0, 0.0), "{stats:?}");
     }
 
     /// Runs blocks until `done` says so, allowing a few seconds for a stage to build.

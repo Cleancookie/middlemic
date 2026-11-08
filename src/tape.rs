@@ -226,7 +226,7 @@ fn feed(
         let _ = position.compare_exchange(at, at + FRAME, Ordering::Relaxed, Ordering::Relaxed);
         frames += 1;
         if frames % 10 == 0 {
-            settings.set_stage_latencies(chain.stage_latencies().map(|(id, n)| (id, n as f32 * to_ms)));
+            settings.set_stage_stats(chain.stage_stats().map(|(id, n, load)| (id, n as f32 * to_ms, load)));
         }
     }
     // Let what is already queued play out before the render thread is told to stop.

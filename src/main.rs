@@ -10,6 +10,7 @@ mod eq_panel;
 mod feedback_panel;
 mod icons;
 mod knob;
+mod latency;
 mod level;
 mod live_spectrum;
 mod motion;

@@ -141,6 +141,9 @@ pub struct Section {
     status: std::sync::Mutex<String>,
     /// Delay this stage adds right now, in ms (`f32` bits). Written by the DSP thread.
     latency_ms: AtomicU32,
+    /// Share of real time this stage's processing takes, as an `f32` fraction (1.0 is one
+    /// whole core). Written by the DSP thread.
+    load: AtomicU32,
 }
 
 impl Section {
@@ -163,7 +166,12 @@ impl Section {
             open: AtomicBool::new(false),
             status: std::sync::Mutex::new(String::new()),
             latency_ms: AtomicU32::new(0),
+            load: AtomicU32::new(0),
         }
+    }
+
+    pub fn load(&self) -> f32 {
+        f32::from_bits(self.load.load(Relaxed))
     }
 
     pub fn latency_ms(&self) -> f32 {
@@ -172,6 +180,10 @@ impl Section {
 
     pub fn set_latency_ms(&self, ms: f32) {
         self.latency_ms.store(ms.to_bits(), Relaxed);
+    }
+
+    pub fn set_load(&self, load: f32) {
+        self.load.store(load.to_bits(), Relaxed);
     }
 
     pub fn status(&self) -> String {
@@ -344,6 +356,8 @@ pub struct Meters {
     output_peak: AtomicU32,
     load: AtomicU32,
     latency_ms: AtomicU32,
+    capture_buffer_ms: AtomicU32,
+    render_buffer_ms: AtomicU32,
     dropouts: AtomicU32,
     pub input_scope: Scope,
     pub output_scope: Scope,
@@ -384,6 +398,24 @@ impl Meters {
         f32::from_bits(self.latency_ms.load(Relaxed))
     }
 
+    pub fn set_capture_buffer_ms(&self, ms: f32) {
+        self.capture_buffer_ms.store(ms.to_bits(), Relaxed);
+    }
+
+    pub fn set_render_buffer_ms(&self, ms: f32) {
+        self.render_buffer_ms.store(ms.to_bits(), Relaxed);
+    }
+
+    /// The input device's period, as reported when the engine opened it.
+    pub fn capture_buffer_ms(&self) -> f32 {
+        f32::from_bits(self.capture_buffer_ms.load(Relaxed))
+    }
+
+    /// The output device's buffer, as reported when the engine opened it.
+    pub fn render_buffer_ms(&self) -> f32 {
+        f32::from_bits(self.render_buffer_ms.load(Relaxed))
+    }
+
     /// Peak since the last call.
     pub fn take_input(&self) -> f32 {
         f32::from_bits(self.input_peak.swap(0, Relaxed))
@@ -397,6 +429,11 @@ impl Meters {
     pub fn load(&self) -> f32 {
         f32::from_bits(self.load.load(Relaxed))
     }
+}
+
+/// The processing load of the enabled stages together, as a fraction of one core.
+pub fn total_load(items: &[Arc<Item>]) -> f32 {
+    items.iter().filter(|i| i.section.is_enabled()).map(|i| i.section.load()).sum()
 }
 
 /// `list` with the entry at position `from` moved into the gap before position `gap`
@@ -586,20 +623,22 @@ impl Settings {
         self.rack.lock().unwrap().items.clone()
     }
 
-    /// Publish each stage's delay to its row. Ids not in the rack are skipped.
-    pub fn set_stage_latencies(&self, latencies: impl Iterator<Item = (u64, f32)>) {
+    /// Publish each stage's delay (ms) and load to its row. Ids not in the rack are skipped.
+    pub fn set_stage_stats(&self, stats: impl Iterator<Item = (u64, f32, f32)>) {
         let rack = self.rack.lock().unwrap();
-        for (id, ms) in latencies {
+        for (id, ms, load) in stats {
             if let Some(item) = rack.items.iter().find(|i| i.id == id) {
                 item.section.set_latency_ms(ms);
+                item.section.set_load(load);
             }
         }
     }
 
-    /// Back to zero, for when the audio stops and no stage adds any delay.
-    pub fn clear_stage_latencies(&self) {
+    /// Back to zero, for when the audio stops and no stage adds any delay or load.
+    pub fn clear_stage_stats(&self) {
         for item in self.items() {
             item.section.set_latency_ms(0.0);
+            item.section.set_load(0.0);
         }
     }
 
@@ -764,6 +803,18 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn total_load_adds_up_only_the_enabled_stages() {
+        let settings = Settings::new(vec![Section::new("A", vec![]), Section::new("B", vec![]), Section::new("C", vec![])]);
+        let items = settings.items();
+        settings.set_stage_stats(items.iter().map(|i| (i.id, 1.0, 0.25)));
+        items[2].section.enabled.store(false, Relaxed);
+        assert_eq!(total_load(&items), 0.5);
+        settings.clear_stage_stats();
+        assert_eq!(total_load(&items), 0.0);
+        assert_eq!(items[0].section.latency_ms(), 0.0);
+    }
     use crate::dsp::new_section;
 
     fn rack(kinds: &[&str]) -> Arc<Settings> {

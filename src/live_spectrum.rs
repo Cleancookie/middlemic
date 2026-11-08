@@ -1,6 +1,7 @@
 //! The live analyser behind the bottom pane: the mic and the output as a spectrum, and a
 //! scrolling spectrogram of the output. One instance feeds every display, so the FFTs run once.
 
+use crate::latency::load_text;
 use crate::settings::Meters;
 use crate::spectrum::{
     Analyzer, FFT_LEN, FLOOR_DB, MAX_HZ, MIN_HZ, SAMPLE_RATE, freq_to_x, heat, to_columns,
@@ -115,7 +116,7 @@ impl LiveSpectrum {
     }
 
     /// A clickable header that folds the displays away, then the displays when `open`.
-    pub fn pane(&mut self, ui: &mut Ui, open: &mut bool, deesser_hz: Option<f32>) {
+    pub fn pane(&mut self, ui: &mut Ui, open: &mut bool, deesser_hz: Option<f32>, load: Option<f32>) {
         let (rect, header) = ui.allocate_exact_size(vec2(ui.available_width(), HEADER_HEIGHT), Sense::click());
         let color = if header.hovered() { theme::TEXT } else { theme::TEXT_DIM };
         let c = pos2(rect.left() + 8.0, rect.center().y);
@@ -128,13 +129,22 @@ impl LiveSpectrum {
             FontId::proportional(12.0),
             color,
         );
+        if let Some(load) = load {
+            ui.painter().text(
+                pos2(rect.right() - 6.0, rect.center().y),
+                Align2::RIGHT_CENTER,
+                format!("all stages {}", load_text(load)),
+                FontId::monospace(11.0),
+                theme::TEXT_DIM,
+            );
+        }
         if header.clicked() {
             *open = !*open;
         }
         theme::help_tooltip_with_hint(
             header.on_hover_cursor(egui::CursorIcon::PointingHand),
             "Spectrum",
-            "Live frequency view of your mic and of the sound after the whole rack, whichever stage is open.",
+            "Live frequency view of your mic and of the sound after the whole rack, whichever stage is open. The figure on the right is the processing load of all stages together, as a share of one CPU core.",
             "Click to fold or unfold",
         );
         if *open {
@@ -276,7 +286,7 @@ mod tests {
     fn the_header_folds_the_pane_and_the_displays_follow() {
         let (ctx, mut spectrum) = (egui::Context::default(), LiveSpectrum::default());
         let shapes = |open: &mut bool, spectrum: &mut LiveSpectrum| {
-            ctx.run_ui(egui::RawInput::default(), |ui| spectrum.pane(ui, open, None)).shapes.len()
+            ctx.run_ui(egui::RawInput::default(), |ui| spectrum.pane(ui, open, None, Some(0.05))).shapes.len()
         };
         let (mut open, mut closed) = (true, false);
         assert!(shapes(&mut open, &mut spectrum) > shapes(&mut closed, &mut spectrum) + 10);

@@ -8,6 +8,7 @@ use crate::eq_panel::EqPanel;
 use crate::feedback_panel;
 use crate::presets::{self, Presets};
 use crate::icons::gear_button;
+use crate::latency::Latency;
 use crate::level::{self, LevelMeter};
 use crate::live_spectrum::LiveSpectrum;
 use crate::rack::{Rack, section_body};
@@ -328,7 +329,7 @@ impl App {
     fn stop(&mut self) {
         self.engine = None; // Drop joins the threads.
         self.out_meter.reset();
-        self.settings.clear_stage_latencies();
+        self.settings.clear_stage_stats();
     }
 
     fn current_text(&self) -> String {
@@ -553,9 +554,8 @@ impl App {
         let detail = if self.running() {
             format!(
                 "Whole app, as a share of all cores (as Task Manager shows it)\n\
-                 DSP {:.1}% of one core\nDelay ~{:.0} ms plus a 50 ms cushion and device buffers\nAudio gaps: {}",
+                 DSP {:.1}% of one core\nAudio gaps: {}",
                 meters.load() * 100.0,
-                meters.latency_ms(),
                 meters.dropouts()
             )
         } else {
@@ -567,6 +567,15 @@ impl App {
             "How hard your PC is working for middlemic. If it is high or you hear gaps, turn off heavy stages such as the AI noise removal.",
             &detail,
         );
+        if self.running() {
+            let latency = Latency::new(meters.capture_buffer_ms(), meters.latency_ms(), meters.render_buffer_ms());
+            theme::help_tooltip_with_hint(
+                ui.label(format!("Latency ~{:.0} ms", latency.total_ms())),
+                "Latency",
+                "How much later your voice leaves middlemic than it left your mouth: every wait between the mic and the virtual cable, added up. Apps that listen to the cable add their own on top.",
+                &latency.breakdown(),
+            );
+        }
         let waiting = match self.updater.status() {
             Status::Available(r) | Status::Ready(r, _) => Some(r.tag),
             _ => None,
@@ -881,7 +890,7 @@ impl App {
     fn stop_playback(&mut self) {
         self.player = None;
         if !self.running() {
-            self.settings.clear_stage_latencies();
+            self.settings.clear_stage_stats();
         }
     }
 
@@ -1081,8 +1090,10 @@ impl eframe::App for App {
         }
         if self.wizard.is_none() && self.page == Page::Rack {
             self.update_spectrum();
-            let deesser_hz = dsp::first_deesser_hz(&self.settings.items());
-            egui::Panel::bottom("spectrum").show(ui, |ui| self.spectrum.pane(ui, &mut self.spectrum_open, deesser_hz));
+            let items = self.settings.items();
+            let deesser_hz = dsp::first_deesser_hz(&items);
+            let load = self.running().then(|| crate::settings::total_load(&items));
+            egui::Panel::bottom("spectrum").show(ui, |ui| self.spectrum.pane(ui, &mut self.spectrum_open, deesser_hz, load));
         }
         egui::CentralPanel::default().show(ui, |ui| {
             if self.wizard.is_some() {
