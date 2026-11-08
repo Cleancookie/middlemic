@@ -254,3 +254,27 @@ pub fn spawn_render(settings: Arc<Settings>, source: PathBuf, target: PathBuf) -
 fn display_name(path: &Path) -> String {
     path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned())
 }
+
+/// Removes one take's file. A rendered "(processed)" copy is a take in its own right, so it stays.
+pub fn delete_take(path: &Path) -> Result<(), String> {
+    std::fs::remove_file(path).map_err(|err| format!("could not delete {}: {err}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deleting_a_take_leaves_its_processed_copy_and_other_takes() {
+        let dir = std::env::temp_dir().join(format!("middlemic-tape-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (take, processed, other) = (dir.join("Take 1.wav"), dir.join("Take 1 (processed).wav"), dir.join("Take 2.wav"));
+        for p in [&take, &processed, &other] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        delete_take(&take).unwrap();
+        assert!(!take.exists() && processed.exists() && other.exists());
+        assert!(delete_take(&take).unwrap_err().contains("could not delete"), "missing file reports an error");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

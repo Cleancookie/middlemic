@@ -1,6 +1,6 @@
 //! Painted icon buttons: egui's default fonts lack glyphs such as ✕, ⟳ and ⚙.
 
-use egui::{Pos2, Response, Sense, Shape, Stroke, StrokeKind, Ui, Vec2, vec2};
+use egui::{Pos2, Response, Sense, Shape, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use std::f32::consts::{FRAC_PI_2, TAU};
 
 /// A framed square button; `draw` paints the icon given its centre, radius and stroke.
@@ -81,6 +81,21 @@ pub fn stop_button(ui: &mut Ui) -> Response {
     })
 }
 
+/// A bin with a lid; red while `armed`, i.e. waiting for the confirming click.
+pub fn trash_button(ui: &mut Ui, armed: bool) -> Response {
+    let side = ui.spacing().interact_size.y;
+    icon_button(ui, side, side * 0.28, |painter, c, r, stroke| {
+        let stroke = if armed { Stroke::new(stroke.width, crate::theme::ERROR) } else { stroke };
+        let top = c.y - r * 0.55;
+        painter.line_segment([pos2(c.x - r, top), pos2(c.x + r, top)], stroke);
+        painter.line_segment([pos2(c.x - r * 0.35, top), pos2(c.x - r * 0.35, top - r * 0.4)], stroke);
+        painter.line_segment([pos2(c.x + r * 0.35, top), pos2(c.x + r * 0.35, top - r * 0.4)], stroke);
+        painter.line_segment([pos2(c.x - r * 0.35, top - r * 0.4), pos2(c.x + r * 0.35, top - r * 0.4)], stroke);
+        let body = vec![pos2(c.x - r * 0.75, top), pos2(c.x - r * 0.6, c.y + r), pos2(c.x + r * 0.6, c.y + r), pos2(c.x + r * 0.75, top)];
+        painter.add(Shape::line(body, stroke));
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,7 +105,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut sizes = Vec::new();
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            for button in [cross_button, refresh_button, gear_button] {
+            for button in [cross_button, refresh_button, gear_button, |ui: &mut Ui| trash_button(ui, true)] {
                 let r = button(ui);
                 assert!(r.sense.senses_click());
                 sizes.push(r.rect.size());

@@ -162,6 +162,7 @@ struct App {
     meter_fall: f32,
     updater: Updater,
     takes: Vec<Take>,
+    delete_arm: recordings_panel::DeleteArm,
     takes_scanned: Option<Instant>,
     recorder: Option<Recorder>,
     player: Option<Player>,
@@ -261,6 +262,7 @@ impl App {
             input_monitor: None,
             last_levels: None,
             takes: Vec::new(),
+            delete_arm: Default::default(),
             takes_scanned: None,
             recorder: None,
             player: None,
@@ -979,8 +981,8 @@ impl App {
                 if self.player.as_ref().is_some_and(|p| p.path == path) {
                     self.stop_playback();
                 }
-                if let Err(err) = std::fs::remove_file(&path) {
-                    self.tape_message = format!("could not delete {}: {err}", path.display());
+                if let Err(why) = tape::delete_take(&path) {
+                    self.tape_message = why;
                 }
                 self.scan_takes();
             }
@@ -1151,6 +1153,7 @@ impl eframe::App for App {
                         outputs: &self.devices.outputs,
                         monitor: &mut self.monitor,
                         looping: &mut self.loop_playback,
+                        delete_arm: &mut self.delete_arm,
                         message: &self.tape_message,
                     },
                 );
