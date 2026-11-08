@@ -20,6 +20,9 @@ open: ## Quick-build, copy to %LOCALAPPDATA%\middlemic\bin, then start it on Win
 	@command -v wslpath >/dev/null || { echo "make open needs WSL to start a Windows program"; exit 1; }
 	@cargo build --profile quick --target $(TARGET)
 	@mkdir -p "$(LOCAL_BIN)"
+	@# X hides the window to the tray, so the old copy is usually still running and locks the exe.
+	@taskkill.exe /F /IM middlemic.exe >/dev/null 2>&1 || true
+	@sleep 0.5
 	@cp $(QUICK_EXE) "$(LOCAL_BIN)/" || { echo "copy failed: close the running middlemic first"; exit 1; }
 	@setsid nohup "$(LOCAL_BIN)/middlemic.exe" >/dev/null 2>&1 &
 	@echo "started $(LOCAL_BIN)/middlemic.exe"
