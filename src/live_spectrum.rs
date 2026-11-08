@@ -185,7 +185,7 @@ impl LiveSpectrum {
         for t in Tab::ALL {
             let galley = ui.painter().layout_no_wrap(t.title().into(), FontId::proportional(12.0), Color32::PLACEHOLDER);
             let slot = Rect::from_min_size(pos2(x, rect.top()), vec2(galley.size().x + 12.0, rect.height()));
-            let response = ui.interact(slot, egui::Id::new(("pane-tab", t as u8)), Sense::click());
+            let response = ui.interact(slot, ui.make_persistent_id(("pane-tab", t as u8)), Sense::click());
             let selected = *open && *tab == t;
             let text = if selected || response.hovered() { theme::TEXT } else { theme::TEXT_DIM };
             let at = pos2(slot.left() + 6.0, rect.center().y - galley.size().y / 2.0);
@@ -202,13 +202,14 @@ impl LiveSpectrum {
             x = slot.right();
         }
         if let Some(load) = load {
-            ui.painter().text(
+            let text_rect = ui.painter().text(
                 pos2(rect.right() - 6.0, rect.center().y),
                 Align2::RIGHT_CENTER,
                 format!("all stages {}", load_text(load)),
                 FontId::monospace(11.0),
                 theme::TEXT_DIM,
             );
+            theme::paint_divider(ui.painter(), pos2(text_rect.left() - 8.0, rect.center().y));
         }
         if header.clicked() {
             *open = !*open;

@@ -383,7 +383,7 @@ impl App {
         ui.horizontal(|ui| {
             self.preset_picker(ui);
             if wide {
-                ui.separator();
+                theme::divider(ui);
                 self.readouts(ui);
             }
         });
@@ -533,6 +533,8 @@ impl App {
 
     /// levels | CPU | gear | start, with start pinned to the right edge.
     fn readouts(&mut self, ui: &mut egui::Ui) {
+        let mut dividers = theme::Dividers::default();
+        dividers.next(ui);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 3.0;
             let clear_in = level_row(
@@ -556,7 +558,7 @@ impl App {
                 self.out_meter.clear_clip();
             }
         });
-        ui.separator();
+        dividers.next(ui);
         let cpu = self.cpu.percent();
         let meters = &self.settings.meters;
         let detail = if self.running() {
@@ -576,6 +578,7 @@ impl App {
             &detail,
         );
         if self.running() {
+            dividers.next(ui);
             let latency = Latency::new(meters.capture_buffer_ms(), meters.latency_ms(), meters.render_buffer_ms());
             theme::help_tooltip_with_hint(
                 ui.label(format!("Latency ~{:.0} ms", latency.total_ms())),
@@ -589,6 +592,7 @@ impl App {
             _ => None,
         };
         if let Some(tag) = waiting {
+            dividers.next(ui);
             let link = ui.link(egui::RichText::new(format!("{tag} available")).color(theme::WARN));
             if theme::help_tooltip(link, "Update available", "A newer middlemic has been released. Opens Settings, where you can download it and install it when you are ready.").clicked() {
                 self.open_settings();

@@ -71,6 +71,35 @@ pub fn level_bar_with_peak(ui: &mut Ui, level: f32, tick: f32, clipped: bool, wi
     response
 }
 
+const DIVIDER_HEIGHT: f32 = 14.0;
+
+/// A 1 px vertical line centred on `centre`, in the subtle stroke colour.
+pub fn paint_divider(painter: &egui::Painter, centre: egui::Pos2) {
+    let half = egui::vec2(0.0, DIVIDER_HEIGHT / 2.0);
+    painter.line_segment([centre - half, centre + half], Stroke::new(1.0, GRID_STRONG));
+}
+
+/// Separates groups of readouts in a row. Call `next` just before drawing each group that is
+/// actually shown: the first gets no divider, so hidden groups never leave one dangling.
+#[derive(Default)]
+pub struct Dividers {
+    shown_any: bool,
+}
+
+impl Dividers {
+    pub fn next(&mut self, ui: &mut Ui) {
+        if std::mem::replace(&mut self.shown_any, true) {
+            divider(ui);
+        }
+    }
+}
+
+/// A divider as a layout item, for rows where the neighbours are always both shown.
+pub fn divider(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, DIVIDER_HEIGHT), egui::Sense::hover());
+    paint_divider(ui.painter(), rect.center());
+}
+
 /// 0..1 that eases in and out over 180 ms towards `on`. Repaints only while it moves.
 pub fn animate(ctx: &Context, id: egui::Id, on: bool) -> f32 {
     ctx.animate_bool_with_time_and_easing(id, on, 0.18, egui::emath::easing::cubic_in_out)
@@ -187,6 +216,27 @@ mod tests {
         for part in ["Floor ratio", "Pushes quiet sound down.", "drag to change"] {
             assert!(text.contains(part), "tooltip lacks {part:?}: {text}");
         }
+    }
+
+    #[test]
+    fn dividers_appear_only_between_groups_that_are_shown() {
+        let ctx = Context::default();
+        let lines = |groups: &[bool]| {
+            let out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.horizontal(|ui| {
+                    let mut dividers = Dividers::default();
+                    for _ in groups.iter().filter(|&&shown| shown) {
+                        dividers.next(ui);
+                        ui.label("x");
+                    }
+                });
+            });
+            out.shapes.iter().filter(|s| matches!(s.shape, egui::epaint::Shape::LineSegment { .. })).count()
+        };
+        assert_eq!(lines(&[]), 0);
+        assert_eq!(lines(&[true]), 0, "no leading or trailing divider");
+        assert_eq!(lines(&[true, false, true]), 1, "a hidden group leaves no doubled divider");
+        assert_eq!(lines(&[true, true, true]), 2);
     }
 
     #[test]
