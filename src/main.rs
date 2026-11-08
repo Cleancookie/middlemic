@@ -11,6 +11,7 @@ mod feedback_panel;
 mod icons;
 mod knob;
 mod level;
+mod motion;
 #[cfg(test)]
 mod offline;
 mod playout;

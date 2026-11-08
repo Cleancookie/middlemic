@@ -78,6 +78,11 @@ pub fn ui(ui: &mut Ui, section: &Section, reductions: &[f32], spectrum: &[f32]) 
     let levels = once_per_frame(ui, "compressor-levels", || {
         (0..section.level_meters()).map(|slot| section.take_level(slot)).collect()
     });
+    let reductions: Vec<f32> = reductions
+        .iter()
+        .enumerate()
+        .map(|(i, &db)| crate::motion::glide_reduction(ui.ctx(), tab_id.with(("reduction", i)), db))
+        .collect();
     let reduction = |strip: usize| reductions.get(strip).copied().unwrap_or(0.0);
     let level = |slot: usize| levels.get(slot).copied().unwrap_or(0.0);
     let mut graph = Rect::NOTHING;
@@ -243,6 +248,11 @@ fn switch(ui: &mut Ui, p: &Param, label: &str, color: Color32) {
 
 fn strip_body(ui: &mut Ui, section: &Section, strip: usize, reduction: f32, [input, output]: [f32; 2]) {
     let p = |f| &section.params[param(strip, f)];
+    // Per strip, so switching tabs glides from that strip's own last reading.
+    let norm = |slot: &str, peak: f32| {
+        crate::motion::glide_level(ui.ctx(), ui.make_persistent_id(("strip-level", strip, slot)), level_norm(level_db(peak)))
+    };
+    let (input, output) = (norm("in", input), norm("out", output));
     let color = strip_color(strip);
     ui.horizontal_wrapped(|ui| {
         ui.group(|ui| {
@@ -292,13 +302,13 @@ fn strip_body(ui: &mut Ui, section: &Section, strip: usize, reduction: f32, [inp
 }
 
 /// A vertical level meter over its gain knob. `mark_db` draws a tick, such as the threshold.
-fn meter_column(ui: &mut Ui, gain: &Param, label: &str, peak: f32, mark_db: Option<f32>, color: Color32) {
+fn meter_column(ui: &mut Ui, gain: &Param, label: &str, norm: f32, mark_db: Option<f32>, color: Color32) {
     ui.vertical(|ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(58.0, METER_HEIGHT), Sense::hover());
         let bar = Rect::from_center_size(rect.center(), vec2(METER_WIDTH, rect.height()));
         let painter = ui.painter();
         painter.rect(bar, 3.0, theme::PLOT_BG, Stroke::new(1.0, theme::GRID), StrokeKind::Outside);
-        let fill = level_norm(level_db(peak)) * bar.height();
+        let fill = norm * bar.height();
         if fill > 0.5 {
             let lit = Rect::from_min_max(pos2(bar.left(), bar.bottom() - fill), bar.max);
             painter.rect_filled(lit, 3.0, if ui.is_enabled() { color } else { theme::OUTLINE_OFF });
@@ -331,7 +341,7 @@ fn reduction_meter(ui: &mut Ui, db: f32) {
 }
 
 /// Input dB across, output dB up, both over `RANGE_DB`, with the live level as a dot.
-fn transfer_curve(ui: &mut Ui, section: &Section, strip: usize, peak: f32, reduction: f32, color: Color32) {
+fn transfer_curve(ui: &mut Ui, section: &Section, strip: usize, norm: f32, reduction: f32, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(vec2(CURVE_SIZE, CURVE_SIZE), Sense::hover());
     let painter = ui.painter_at(rect);
     let at = |input_db: f32, output_db: f32| {
@@ -363,9 +373,10 @@ fn transfer_curve(ui: &mut Ui, section: &Section, strip: usize, peak: f32, reduc
         })
         .collect();
     painter.add(Shape::line(points, Stroke::new(2.0, color)));
-    if peak > 0.0 {
-        let input = level_db(peak);
-        painter.circle_filled(at(input, input - reduction), 4.0, theme::TEXT);
+    if norm > 0.0 {
+        let input = (norm - 1.0) * RANGE_DB;
+        let fade = (norm * 10.0).min(1.0);
+        painter.circle_filled(at(input, input - reduction), 4.0, theme::TEXT.gamma_multiply(fade));
     }
     let small = FontId::proportional(9.5);
     painter.text(rect.right_bottom() - vec2(4.0, 3.0), Align2::RIGHT_BOTTOM, "IN", small.clone(), theme::TEXT_DIM);

@@ -352,7 +352,8 @@ pub fn section_body(ui: &mut Ui, section: &Section, reductions: &[f32]) {
     }
     if !reductions.is_empty() {
         egui::Grid::new((section.name, "reduction")).num_columns(2).show(ui, |ui| {
-            for (label, db) in section.reduction_labels.iter().zip(reductions) {
+            for (label, &db) in section.reduction_labels.iter().zip(reductions) {
+                let db = crate::motion::glide_reduction(ui.ctx(), ui.make_persistent_id(("reduction", *label)), db);
                 ui.label(format!("{label} turned down"));
                 ui.add(
                     egui::ProgressBar::new(db / REDUCTION_RANGE_DB)
