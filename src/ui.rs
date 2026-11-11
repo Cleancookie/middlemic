@@ -82,9 +82,13 @@ fn model_row(ui: &mut egui::Ui, download: &mut Option<Arc<Mutex<Progress>>>) {
         *download = None;
         return;
     }
+    let missing = dsp::missing_downloads(model);
+    let names: Vec<_> = missing.iter().map(|f| f.file).collect();
+    let megabytes: u32 = missing.iter().map(|f| f.megabytes).sum();
     ui.label(format!(
-        "The model file ({} MB, Apache-2.0, from huggingface.co/Ceva-IP/DPDFNet) is not installed.",
-        model.megabytes
+        "Needs {} ({megabytes} MB: the model is Apache-2.0 from huggingface.co/Ceva-IP/DPDFNet, \
+         onnxruntime.dll is Microsoft's, MIT).",
+        names.join(" and ")
     ));
     let state = download.as_ref().map(|p| {
         let p = p.lock().unwrap();
@@ -106,15 +110,10 @@ fn model_row(ui: &mut egui::Ui, download: &mut Option<Arc<Mutex<Progress>>>) {
             theme::help_tooltip(
                 button.clone(),
                 label,
-                "Downloads the AI model this stage needs (checked against a known checksum before use). The stage starts working as soon as the file lands.",
+                "Downloads the AI model and the ONNX Runtime library this stage needs (each checked against a known checksum before use). The stage starts working as soon as the file lands.",
             );
             if button.clicked() {
-                *download = Some(setup::spawn_model_download(
-                    model.url,
-                    dsp::model_download_dir(),
-                    model.file,
-                    model.sha256,
-                ));
+                *download = Some(setup::spawn_downloads(missing, dsp::model_download_dir()));
             }
         }
     }

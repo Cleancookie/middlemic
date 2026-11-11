@@ -46,7 +46,7 @@ plus a scrolling spectrogram with the de-esser's frequency marked. Click its hea
 | --- | --- |
 | **Feedback suppressor** | Spots speaker-to-mic howls by FFT and cuts each with a narrow notch that fades once the howl is gone. A strip shows each notch's pitch and depth. |
 | **Echo cancellation** | WebRTC AEC3, pure Rust. Removes what your speakers play from your mic. It listens to the default playback device through WASAPI loopback, so set Windows playback to your speakers or headphones, not the cable. If the cable is the default, the stage idles rather than erase your own voice. Off by default. |
-| **DPDFNet** | The noise removal: removes fans, hum, keyboard and room noise and keeps speech clear. Needs a one-time model download (see below). Adds about 50 ms and uses roughly 40% of a core. |
+| **DPDFNet** | The noise removal: removes fans, hum, keyboard and room noise and keeps speech clear. Needs a one-time model download (see below). Adds about 50 ms and uses roughly 15% of a core. |
 | **Mic boost** | Plain gain. |
 | **EQ** | A plugin-style EQ: response curve with draggable band dots and a row of knobs per band. |
 | **De-esser** | Tames harsh "s" sounds, with a gain-reduction meter. |
@@ -56,10 +56,12 @@ plus a scrolling spectrogram with the de-esser's frequency marked. Click its hea
 DPDFNet has a **Max reduction** knob: the most noise it may remove, in dB.
 At 18 dB speech stays natural; raise it for a noisier room.
 
-**DPDFNet model.** The row shows a **Download model** button until the file is installed. It
-fetches `dpdfnet2_48khz_hr.onnx` (Ceva, Apache-2.0, from huggingface.co/Ceva-IP/DPDFNet) at a
-pinned revision, checks its SHA-256 and saves it to `%APPDATA%\middlemic\models`. The stage
-starts working as soon as the file lands. A copy in a `models` folder next to the exe works too.
+**DPDFNet model.** The row shows a **Download model** button until both files are installed. It
+fetches `dpdfnet2_48khz_hr.onnx` (Ceva, Apache-2.0, from huggingface.co/Ceva-IP/DPDFNet) and
+`onnxruntime.dll` (ONNX Runtime 1.31.1 from Microsoft's GitHub release, MIT; the DLL is taken out
+of the zip), each at a pinned revision with its SHA-256 checked, and saves them to
+`%APPDATA%\middlemic\models`. The stage starts working as soon as the files land. Copies in a
+`models` folder next to the exe work too.
 
 ### Add, remove and multiple instances
 
@@ -138,6 +140,7 @@ through the rack in 10 ms frames, as the live engine does. Run them by name:
 ```sh
 export MIDDLEMIC_TEST_AUDIO=/path/to/recording.m4a MIDDLEMIC_TEST_OUT=/path/to/output-dir
 export MIDDLEMIC_MODELS=/path/to/dir-with-the-onnx-model     # for DPDFNet
+export ORT_DYLIB_PATH=/path/to/libonnxruntime.so             # ONNX Runtime 1.31 for Linux; DPDFNet tests skip without it
 cargo test --release feedback_on_recording -- --ignored --nocapture   # does the feedback suppressor misfire?
 cargo test --release analyse_chain -- --ignored --nocapture   # per-frame timing, gating
 cargo test --release analyse_cap   -- --ignored --nocapture   # noise removal strength sweep

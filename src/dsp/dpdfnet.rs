@@ -1,13 +1,18 @@
 use super::Processor;
 use super::cap::ReductionCap;
 use crate::settings::{Param, Section};
+use crate::setup::Fetch;
 use anyhow::{Context, Result, anyhow, ensure};
 use realfft::num_complex::Complex32;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tract_onnx::prelude::*;
+use ort::environment::Environment;
+use ort::ep;
+use ort::session::builder::GraphOptimizationLevel;
+use ort::session::{IoBinding, Session};
+use ort::value::Tensor;
 
 const SEARCH_EVERY: Duration = Duration::from_secs(1);
 
@@ -23,8 +28,8 @@ const LATENCY_SAMPLES: usize = 5 * HOP;
 const DEFAULT_MAX_REDUCTION_DB: f32 = 18.0;
 
 /// Which DPDFNet model a stage runs. The files are Ceva's, Apache-2.0, from
-/// huggingface.co/Ceva-IP/DPDFNet (`onnx/<file>`). Only the light model: on `tract` it costs
-/// about 40% of a core, and the quality one (`dpdfnet8_48khz_hr`) needs more than a whole core.
+/// huggingface.co/Ceva-IP/DPDFNet (`onnx/<file>`). Only the light model: the quality one
+/// (`dpdfnet8_48khz_hr`) needs more than a whole core.
 #[derive(Clone, Copy)]
 pub struct Variant {
     pub name: &'static str,
@@ -50,8 +55,9 @@ pub fn download_dir() -> PathBuf {
         .map_or_else(|| PathBuf::from("models"), |dir| dir.join("models"))
 }
 
+/// Both the model file and the ONNX Runtime library are in place.
 pub fn model_installed(variant: &Variant) -> bool {
-    find_model(variant.file).is_ok()
+    missing_downloads(variant).is_empty()
 }
 
 /// The default noise removal: it kept speech best of the three on Alex's recording.
@@ -65,7 +71,7 @@ pub fn section(variant: Variant) -> Section {
     )
     .help(
         "AI noise removal (DPDFNet) that removes fans, hum, keyboard and room noise while keeping your voice clear. \
-         Needs a one-time model download, adds about 50 ms of delay and uses about 40% of a CPU core.",
+         Needs a one-time model download, adds about 50 ms of delay and uses about 15% of a CPU core.",
     )
     .unfolded()
 }
@@ -95,34 +101,116 @@ fn find_model(file: &str) -> Result<PathBuf> {
     })
 }
 
-/// The model and its recurrent state. One call per hop.
+/// ONNX Runtime library, loaded at run time from `onnxruntime.dll` (Microsoft, MIT). The
+/// download is the official release zip, from which only the DLL is kept.
+pub const RUNTIME: Fetch = Fetch {
+    url: "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-win-x64-1.31.1.zip",
+    file: "onnxruntime.dll",
+    sha256: "5869e26bb25314375f2d5ef1877e3ea06b1543d6c710e6e4a1ec2f7177ab4b2c",
+    member: Some("onnxruntime-win-x64-1.31.1/lib/onnxruntime.dll"),
+    megabytes: 83,
+};
+
+fn find_runtime() -> Result<PathBuf> {
+    match std::env::var_os("ORT_DYLIB_PATH").map(PathBuf::from) {
+        Some(path) if path.is_file() => Ok(path),
+        _ => find_model(RUNTIME.file),
+    }
+}
+
+/// Everything the stage still needs from the network, runtime first.
+pub fn missing_downloads(variant: &Variant) -> Vec<Fetch> {
+    let model = Fetch { url: variant.url, file: variant.file, sha256: variant.sha256, member: None, megabytes: variant.megabytes };
+    let mut missing = Vec::new();
+    if find_runtime().is_err() {
+        missing.push(RUNTIME);
+    }
+    if find_model(variant.file).is_err() {
+        missing.push(model);
+    }
+    missing
+}
+
+/// One ONNX Runtime environment per process; it loads the library on first use.
+fn environment() -> Result<Environment> {
+    static ENV: Mutex<Option<Environment>> = Mutex::new(None);
+    let mut slot = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(env) = slot.as_ref() {
+        return Ok(env.clone());
+    }
+    let dll = find_runtime()?;
+    let env = ort::init_from(&dll)
+        .map_err(|e| anyhow!("loading {}: {e}", dll.display()))?
+        .with_name("middlemic")
+        .with_telemetry(false)
+        .build()
+        .map_err(|e| anyhow!("starting ONNX Runtime: {e}"))?;
+    *slot = Some(env.clone());
+    Ok(env)
+}
+
+fn ort_err(e: impl std::fmt::Display) -> anyhow::Error {
+    anyhow!("{e}")
+}
+
+/// The model and its recurrent state. One call per hop, with every buffer made up front:
+/// the tensors are bound to the session once and rewritten in place.
 struct Net {
-    plan: TypedRunnableModel<TypedModel>,
-    state: Vec<f32>,
+    session: Session,
+    binding: IoBinding,
+    spec_in: Tensor<f32>,
+    state_in: Tensor<f32>,
+    spec_out: Tensor<f32>,
+    state_out: Tensor<f32>,
 }
 
 impl Net {
     fn load(path: &Path) -> Result<Self> {
-        let onnx = tract_onnx::onnx();
-        let proto = onnx
-            .proto_model_for_path(path)
+        let env = environment()?;
+        let session = Session::builder(&env)
+            .map_err(ort_err)?
+            // One thread and no spinning: waiting workers would burn a core beside a game.
+            .with_intra_threads(1)
+            .and_then(|b| b.with_inter_threads(1))
+            .and_then(|b| b.with_intra_op_spinning(false))
+            .and_then(|b| b.with_inter_op_spinning(false))
+            .and_then(|b| b.with_parallel_execution(false))
+            .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::All))
+            // Fixed shapes: a memory pattern and an arena would only keep memory around.
+            .and_then(|b| b.with_memory_pattern(false))
+            .and_then(|b| b.with_execution_providers([ep::CPU::default().with_arena_allocator(false).build()]))
+            .map_err(ort_err)?
+            .commit_from_file(path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let meta = |key: &str| {
-            proto.metadata_props.iter().find(|e| e.key == key).map(|e| e.value.clone())
-        };
+
+        let meta = session.metadata().map_err(ort_err)?;
+        let custom = |key: &str| meta.custom(key);
         let floats = |key: &str| -> Vec<f32> {
-            meta(key)
+            custom(key)
                 .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect())
                 .unwrap_or_default()
         };
         let size = |key: &str, default: usize| {
-            meta(key).and_then(|s| s.trim().parse().ok()).unwrap_or(default)
+            custom(key).and_then(|s| s.trim().parse().ok()).unwrap_or(default)
         };
         let state_size = size("state_size", 0);
         ensure!(state_size > 0, "{} has no state_size metadata", path.display());
         let (erb_len, spec_len) = (size("erb_norm_state_size", 481), size("spec_norm_state_size", 96));
         let (erb, spec) = (floats("erb_norm_init"), floats("spec_norm_init"));
-        let mut init = vec![0.0; state_size];
+        drop(meta);
+
+        let names = |outlets: &[ort::value::Outlet]| outlets.iter().map(|o| o.name().to_string()).collect::<Vec<_>>();
+        let (inputs, outputs) = (names(session.inputs()), names(session.outputs()));
+        ensure!(inputs.len() == 2 && outputs.len() == 2, "model has {} inputs and {} outputs, expected 2 and 2", inputs.len(), outputs.len());
+
+        let allocator = session.allocator();
+        let spec_in = Tensor::<f32>::new(&allocator, [1, 1, BINS, 2]).map_err(ort_err)?;
+        let mut state_in = Tensor::<f32>::new(&allocator, [state_size]).map_err(ort_err)?;
+        let mut spec_out = Tensor::<f32>::new(&allocator, [1, 1, BINS, 2]).map_err(ort_err)?;
+        let mut state_out = Tensor::<f32>::new(&allocator, [state_size]).map_err(ort_err)?;
+
+        let init = state_in.extract_tensor_mut().1;
+        init.fill(0.0);
         if erb.len() == erb_len && erb_len <= state_size {
             init[..erb_len].copy_from_slice(&erb);
         }
@@ -130,32 +218,29 @@ impl Net {
             init[erb_len..erb_len + spec_len].copy_from_slice(&spec);
         }
 
-        let plan = onnx
-            .model_for_proto_model(&proto)?
-            .with_input_fact(0, f32::fact([1, 1, BINS, 2]).into())?
-            .with_input_fact(1, f32::fact([state_size]).into())?
-            .into_optimized()?
-            .into_runnable()?;
-        Ok(Self { plan, state: init })
+        let mut binding = session.create_binding().map_err(ort_err)?;
+        binding.bind_input(&inputs[0], &spec_in).map_err(ort_err)?;
+        binding.bind_input(&inputs[1], &state_in).map_err(ort_err)?;
+        binding.bind_output(&outputs[0], &mut spec_out).map_err(ort_err)?;
+        binding.bind_output(&outputs[1], &mut state_out).map_err(ort_err)?;
+        Ok(Self { session, binding, spec_in, state_in, spec_out, state_out })
     }
 
     fn run(&mut self, spec: &[f32; SPEC_LEN], spec_e: &mut [f32; SPEC_LEN]) -> Result<()> {
-        let inputs = tvec!(
-            Tensor::from_shape(&[1, 1, BINS, 2], spec)?.into(),
-            Tensor::from_shape(&[self.state.len()], &self.state)?.into()
-        );
-        let out = self.plan.run(inputs)?;
-        let enhanced = out[0].as_slice::<f32>()?;
-        let next = out[1].as_slice::<f32>()?;
+        self.spec_in.extract_tensor_mut().1.copy_from_slice(spec);
+        self.session.run_binding(&self.binding).map_err(ort_err)?;
+        let enhanced = self.spec_out.extract_tensor().1;
+        let next = self.state_out.extract_tensor().1;
+        let state = self.state_in.extract_tensor_mut().1;
         ensure!(
-            enhanced.len() == SPEC_LEN && next.len() == self.state.len(),
+            enhanced.len() == SPEC_LEN && next.len() == state.len(),
             "model outputs are {} and {} values, expected {SPEC_LEN} and {}",
             enhanced.len(),
             next.len(),
-            self.state.len()
+            state.len()
         );
         spec_e.copy_from_slice(enhanced);
-        self.state.copy_from_slice(next);
+        state.copy_from_slice(next);
         Ok(())
     }
 }
@@ -268,7 +353,10 @@ impl DpdfNet {
             Ok(path) => path,
             Err(missing) => return self.section.set_status(format!("{missing:#}")),
         };
-        match Net::load(&path) {
+        // ort panics when the library it loads is too old for it; report that like any other failure.
+        let loaded = std::panic::catch_unwind(|| Net::load(&path))
+            .unwrap_or_else(|_| Err(anyhow!("onnxruntime.dll could not be used: is it an old version? Delete it to download the right one")));
+        match loaded {
             Ok(net) => {
                 self.net = Some(net);
                 self.section.set_status("");
@@ -374,11 +462,95 @@ mod tests {
         assert!(!stage.should_look_for_model(), "a model that failed to load is not retried");
     }
 
+    /// Skips (returns None) unless both the model and an ONNX Runtime library can be found.
+    fn real_stage() -> Option<DpdfNet> {
+        if find_model(LIGHT.file).is_err() || find_runtime().is_err() {
+            eprintln!("skipped: model or ONNX Runtime library not installed (set MIDDLEMIC_MODELS and ORT_DYLIB_PATH)");
+            return None;
+        }
+        let mut stage = DpdfNet::new(Arc::new(section(LIGHT)), LIGHT);
+        stage.prepare(SAMPLE_RATE);
+        assert!(stage.net.is_some(), "{}", stage.section.status());
+        Some(stage)
+    }
+
+    #[test]
+    fn the_real_model_reports_latency_and_turns_noise_down() {
+        let Some(mut stage) = real_stage() else { return };
+        assert_eq!(stage.latency_samples(), LATENCY_SAMPLES);
+        let mut seed = 7u32;
+        let mut audio: Vec<f32> = (0..HOP * 100)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 0.2
+            })
+            .collect();
+        let before: f32 = audio.iter().map(|s| s * s).sum();
+        stage.process(&mut audio);
+        let after: f32 = audio[HOP * 50..].iter().map(|s| s * s).sum::<f32>() * 2.0;
+        assert!(audio.iter().all(|s| s.is_finite()));
+        assert!(after < before * 0.5, "steady noise should be reduced: {before} -> {after}");
+    }
+
+    #[test]
+    fn two_stages_in_one_process_run_independent_state() {
+        let (Some(mut a), Some(mut b)) = (real_stage(), real_stage()) else { return };
+        let tone = |n: usize| (n as f32 * 0.05).sin() * 0.3;
+        let mut x: Vec<f32> = (0..HOP * 20).map(tone).collect();
+        let mut y = x.clone();
+        a.process(&mut x);
+        b.process(&mut y[..HOP * 10]);
+        b.process(&mut y[HOP * 10..]);
+        assert_eq!(x, y, "chunking must not change the result");
+    }
+
     #[test]
     fn the_download_is_pinned_and_checksummed() {
+        assert_eq!(RUNTIME.sha256.len(), 64);
+        assert!(RUNTIME.url.contains("/download/v"), "must name a release");
+        assert!(RUNTIME.url.contains("win-x64") && RUNTIME.member.is_some_and(|m| m.ends_with(RUNTIME.file)));
         assert_eq!(LIGHT.sha256.len(), 64);
         assert!(LIGHT.url.ends_with(LIGHT.file));
         assert!(!LIGHT.url.contains("/main/"), "must name a revision");
+    }
+
+    /// Cost per hop on a fixed noisy clip. `MIDDLEMIC_MODELS=<dir> MIDDLEMIC_BENCH_FILE=<name>
+    /// [MIDDLEMIC_BENCH_OUT=<raw f32 file>] cargo test --release bench_hop -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_hop() {
+        let file: &'static str = Box::leak(
+            std::env::var("MIDDLEMIC_BENCH_FILE").unwrap_or_else(|_| LIGHT.file.into()).into_boxed_str(),
+        );
+        let section = Arc::new(section(LIGHT));
+        let mut stage = DpdfNet::new(section.clone(), Variant { file, ..LIGHT });
+        stage.prepare(SAMPLE_RATE);
+        assert!(stage.net.is_some(), "{}", section.status());
+        let mut seed = 12345u32;
+        let mut noise = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+        };
+        let hops = 1500;
+        let mut audio: Vec<f32> = (0..hops * HOP)
+            .map(|n| {
+                let t = n as f32 / SAMPLE_RATE as f32;
+                let gate = if (t * 2.0).fract() < 0.6 { 1.0 } else { 0.0 };
+                let voice = (0..6).map(|k| ((k + 1) as f32 * 140.0 * t * std::f32::consts::TAU).sin() / (k + 1) as f32).sum::<f32>();
+                0.2 * gate * voice + 0.05 * noise()
+            })
+            .collect();
+        let warm = 100 * HOP;
+        let (head, rest) = audio.split_at_mut(warm);
+        stage.process(head);
+        let start = Instant::now();
+        stage.process(rest);
+        let per_hop = start.elapsed().as_secs_f64() * 1e3 / (hops - 100) as f64;
+        println!("BENCH {file}: {per_hop:.3} ms per 10 ms hop = {:.1}% of a core", per_hop * 10.0);
+        if let Ok(path) = std::env::var("MIDDLEMIC_BENCH_OUT") {
+            let bytes: Vec<u8> = audio.iter().flat_map(|s| s.to_le_bytes()).collect();
+            std::fs::write(path, bytes).unwrap();
+        }
     }
 
     #[test]

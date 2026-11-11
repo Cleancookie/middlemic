@@ -42,10 +42,35 @@ fn download_script(work_dir: &str) -> String {
     )
 }
 
+/// A file the app downloads on demand, checked against a pinned SHA-256 before it is used.
+#[derive(Clone, Copy)]
+pub struct Fetch {
+    pub url: &'static str,
+    /// Where it lands in the download folder.
+    pub file: &'static str,
+    /// Of the downloaded file: the whole archive when `member` is set.
+    pub sha256: &'static str,
+    /// The one file to take out of a zip download, by its path inside the archive.
+    pub member: Option<&'static str>,
+    pub megabytes: u32,
+}
+
 /// Downloads `url` into `dir/file` through a `.part` file, and only moves it into place if its
-/// SHA-256 is `sha256`. Prints the final path.
-fn model_download_script(url: &str, dir: &str, file: &str, sha256: &str) -> String {
+/// SHA-256 is `sha256`. With `member`, the download is a zip and only that entry is kept.
+/// Prints the final path.
+fn model_download_script(url: &str, dir: &str, file: &str, sha256: &str, member: Option<&str>) -> String {
     let (url, dir, file, sha) = (ps_quote(url), ps_quote(dir), ps_quote(file), ps_quote(&sha256.to_lowercase()));
+    let place = match member {
+        None => "Move-Item -LiteralPath $part -Destination $final -Force; ".to_string(),
+        Some(member) => format!(
+            "Add-Type -AssemblyName System.IO.Compression.FileSystem; \
+             $tmp=$final + '.tmp'; $zip=[IO.Compression.ZipFile]::OpenRead($part); \
+             try{{ $entry=$zip.GetEntry({}); if(-not $entry){{ throw 'the archive is missing a file' }}; \
+             [IO.Compression.ZipFileExtensions]::ExtractToFile($entry,$tmp,$true) }} finally {{ $zip.Dispose() }}; \
+             Remove-Item -LiteralPath $part -Force; Move-Item -LiteralPath $tmp -Destination $final -Force; ",
+            ps_quote(member)
+        ),
+    };
     format!(
         "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; \
          [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; \
@@ -55,7 +80,7 @@ fn model_download_script(url: &str, dir: &str, file: &str, sha256: &str) -> Stri
          $hash=(Get-FileHash -Algorithm SHA256 -LiteralPath $part).Hash.ToLower(); \
          if($hash -ne {sha}){{ Remove-Item -LiteralPath $part -Force; \
          throw ('the download is not the expected file (SHA-256 ' + $hash + ')') }}; \
-         Move-Item -LiteralPath $part -Destination $final -Force; Write-Output $final"
+         {place}Write-Output $final"
     )
 }
 
@@ -71,7 +96,7 @@ fn install_script(installer: &str) -> String {
 }
 
 #[cfg(windows)]
-pub use runner::{Progress, powershell, spawn_install, spawn_model_download};
+pub use runner::{Progress, powershell, spawn_downloads, spawn_install};
 
 #[cfg(windows)]
 mod runner {
@@ -98,13 +123,17 @@ mod runner {
         spawn_task(run)
     }
 
-    /// Download a model file into `dir`, checked against `sha256`. The outcome is its path.
-    pub fn spawn_model_download(url: &'static str, dir: PathBuf, file: &'static str, sha256: &'static str) -> Arc<Mutex<Progress>> {
+    /// Download each of `files` into `dir`, one after the other. The outcome lists what was saved.
+    pub fn spawn_downloads(files: Vec<Fetch>, dir: PathBuf) -> Arc<Mutex<Progress>> {
         spawn_task(move |say| {
-            say(&format!("Downloading {file}…"));
-            let script = model_download_script(url, &dir.to_string_lossy(), file, sha256);
-            let (_, path) = powershell(&script).map_err(|e| anyhow!("download failed: {e}"))?;
-            Ok(format!("Saved {path}"))
+            let mut saved = Vec::new();
+            for f in files {
+                say(&format!("Downloading {} ({} MB)…", f.file, f.megabytes));
+                let script = model_download_script(f.url, &dir.to_string_lossy(), f.file, f.sha256, f.member);
+                let (_, path) = powershell(&script).map_err(|e| anyhow!("download of {} failed: {e}", f.file))?;
+                saved.push(path);
+            }
+            Ok(format!("Saved {}", saved.join(", ")))
         })
     }
 
@@ -218,7 +247,7 @@ mod tests {
 
     #[test]
     fn model_download_checks_the_hash_before_moving_the_file_into_place() {
-        let s = model_download_script("https://example.test/m.onnx", r"C:\Users\O'Brien\m", "m.onnx", "ABC123");
+        let s = model_download_script("https://example.test/m.onnx", r"C:\Users\O'Brien\m", "m.onnx", "ABC123", None);
         assert!(!s.contains('"'));
         assert!(s.contains("https://example.test/m.onnx") && s.contains("'abc123'"), "{s}");
         assert!(s.contains(r"'C:\Users\O''Brien\m'"));
@@ -237,7 +266,16 @@ mod tests {
         let out = std::env::var("MIDDLEMIC_PROBE_OUT").unwrap();
         let dir = std::env::var("MIDDLEMIC_PROBE_DIR").unwrap();
         let sha = std::env::var("MIDDLEMIC_PROBE_SHA").unwrap_or_else(|_| model.sha256.to_string());
-        std::fs::write(out, model_download_script(model.url, &dir, model.file, &sha)).unwrap();
+        std::fs::write(out, model_download_script(model.url, &dir, model.file, &sha, None)).unwrap();
+    }
+
+    #[test]
+    fn runtime_download_keeps_one_entry_of_the_checked_zip() {
+        let s = model_download_script("https://example.test/r.zip", r"C:\m", "onnxruntime.dll", "ABC", Some("pkg/lib/onnxruntime.dll"));
+        assert!(!s.contains('"'));
+        let (check, open, place) = (s.find("-ne").unwrap(), s.find("OpenRead").unwrap(), s.rfind("Move-Item").unwrap());
+        assert!(check < open && open < place, "the zip is only opened after its hash matched");
+        assert!(s.contains("GetEntry('pkg/lib/onnxruntime.dll')"), "{s}");
     }
 
     #[test]

@@ -18,7 +18,9 @@ sonora = "0.3.0"
 realfft = "3.5.1"
 # Also a plain dependency (eframe is Windows-only) so the drawing code can be tested headless.
 egui = { version = "0.37.0", default-features = false, features = ["default_fonts"] }
-tract-onnx = "0.21.19"
+# ONNX Runtime for the DPDFNet model. The runtime is loaded from onnxruntime.dll at run time,
+# so nothing links against it. No stable 2.x exists yet; rc.15 is the newest.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic"] }
 
 [target.'cfg(windows)'.dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
