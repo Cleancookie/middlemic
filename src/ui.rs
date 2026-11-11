@@ -28,6 +28,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+const HIDDEN_REPAINT: Duration = Duration::from_millis(1000);
 const SAVE_EVERY: Duration = Duration::from_secs(1);
 /// Meters fall at this fraction per redraw.
 const METER_DECAY: f32 = 0.85;
@@ -69,7 +70,9 @@ pub fn run(settings: Arc<Settings>, minimized: bool) -> eframe::Result {
                 };
                 cc.egui_ctx.send_viewport_cmd(hide);
             }
-            Ok(Box::new(App::new(settings, tray)))
+            let mut app = App::new(settings, tray);
+            app.in_tray = minimized;
+            Ok(Box::new(app))
         }),
     )
 }
@@ -182,6 +185,9 @@ struct App {
     last_levels: Option<Instant>,
     save_path: PathBuf,
     saved_text: String,
+    /// In the tray or minimised: nothing is drawn, so skip drawing, analysis and fast repaints.
+    hidden: bool,
+    in_tray: bool,
     last_save: Instant,
     cpu: CpuMeter,
     page: Page,
@@ -281,6 +287,8 @@ impl App {
             check_updates_on_launch: extras.get(UPDATE_CHECK_KEY).is_none_or(|v| v != "0"),
             save_path,
             saved_text: saved,
+            hidden: false,
+            in_tray: false,
             last_save: Instant::now(),
             cpu: CpuMeter::new(),
             page: Page::Rack,
@@ -360,6 +368,9 @@ impl App {
     }
 
     fn save_if_changed(&mut self) {
+        if self.hidden {
+            return;
+        }
         if self.last_save.elapsed() < SAVE_EVERY {
             return;
         }
@@ -763,6 +774,7 @@ impl App {
         for action in tray.poll() {
             match action {
                 TrayAction::Show => {
+                    self.in_tray = false;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -776,6 +788,9 @@ impl App {
         if !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.in_tray = true;
+            self.hidden = true;
+            self.write_settings();
         }
     }
 
@@ -1038,7 +1053,7 @@ impl App {
     fn update_levels(&mut self) {
         let now = Instant::now();
         let dt = self.last_levels.replace(now).map_or(0.05, |t| (now - t).as_secs_f32().min(0.25));
-        let wanted = self.wizard.is_none() && !self.running();
+        let wanted = self.wizard.is_none() && !self.running() && !self.hidden;
         let device = (self.input != wizard::WINDOWS_DEFAULT).then(|| self.input.clone());
         if !wanted || self.input_monitor.as_ref().is_some_and(|(d, _)| *d != device) {
             self.input_monitor = None;
@@ -1087,15 +1102,20 @@ impl eframe::App for App {
                     .unwrap_or_else(|| "Stopped.".to_string());
             }
         }
-        self.save_if_changed();
         let ctx = ui.ctx().clone();
         self.handle_tray(&ctx);
-        self.setup_window(&ctx);
-        self.preset_window(&ctx);
-
+        self.hidden = self.in_tray || ctx.input(|i| i.viewport().minimized == Some(true));
+        self.save_if_changed();
         self.update_levels();
         self.tape_tick();
         self.update_mic_levels();
+        if self.hidden {
+            // Nothing is visible: no drawing or analysis, just wake to notice updates and finished jobs.
+            ctx.request_repaint_after(HIDDEN_REPAINT);
+            return;
+        }
+        self.setup_window(&ctx);
+        self.preset_window(&ctx);
         if self.wizard.is_none() {
             egui::Panel::top("devices").show(ui, |ui| self.top_bar(ui));
         }
