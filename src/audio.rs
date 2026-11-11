@@ -26,6 +26,8 @@ pub(crate) const RING_FRAMES: usize = 20;
 /// If the DSP backlog exceeds this, clocks have drifted: drop old audio to bound latency.
 /// WASAPI reports periods in 100 ns units.
 const HNS_PER_MS: f32 = 10_000.0;
+/// The meters' load, latency and per-stage stats are published this often (about every 100 ms).
+const STATS_EVERY_HOPS: u32 = 10;
 const MAX_BACKLOG_FRAMES: usize = 10;
 /// The output waits for this much audio (50 ms of stereo) before it starts, and again after
 /// running dry, so uneven delivery is absorbed instead of heard as gaps.
@@ -338,6 +340,7 @@ fn dsp_loop(
     let meters = &settings.meters;
     let peak = |x: &[f32]| x.iter().fold(0f32, |m, s| m.max(s.abs()));
     let mut load = 0f32;
+    let mut hops = 0u32;
     let mut mono = [0f32; FRAME];
     let mut stereo = [0f32; FRAME * 2];
     while running.load(Ordering::Relaxed) {
@@ -353,10 +356,13 @@ fn dsp_loop(
             chain.process(&mut mono);
             // Fraction of the 10 ms frame budget, lightly smoothed for the UI.
             load += (started.elapsed().as_secs_f32() / 0.010 - load) * 0.1;
-            meters.set_load(load);
-            let to_ms = 1000.0 / SAMPLE_RATE as f32;
-            meters.set_latency_ms(chain.latency_samples() as f32 * to_ms);
-            settings.set_stage_stats(chain.stage_stats().map(|(id, n, load)| (id, n as f32 * to_ms, load)));
+            hops += 1;
+            if hops % STATS_EVERY_HOPS == 0 {
+                meters.set_load(load);
+                let to_ms = 1000.0 / SAMPLE_RATE as f32;
+                meters.set_latency_ms(chain.latency_samples() as f32 * to_ms);
+                settings.set_stage_stats(chain.stage_stats().map(|(id, n, load)| (id, n as f32 * to_ms, load)));
+            }
             meters.record_output(peak(&mono));
             meters.output_scope.write(&mono);
             for (frame, s) in stereo.chunks_exact_mut(2).zip(mono) {

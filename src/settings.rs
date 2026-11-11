@@ -619,8 +619,9 @@ impl Settings {
     }
 
     /// Publish each stage's delay (ms) and load to its row. Ids not in the rack are skipped.
+    /// Skipped when the UI holds the rack: the audio thread never waits, and the next call catches up.
     pub fn set_stage_stats(&self, stats: impl Iterator<Item = (u64, f32, f32)>) {
-        let rack = self.rack.lock().unwrap();
+        let Ok(rack) = self.rack.try_lock() else { return };
         for (id, ms, load) in stats {
             if let Some(item) = rack.items.iter().find(|i| i.id == id) {
                 item.section.set_latency_ms(ms);
