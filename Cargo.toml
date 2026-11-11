@@ -5,6 +5,10 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Lightweight mic processing chain for Windows"
 
+[features]
+# Counts heap allocations for `--profile`.
+profile = []
+
 [profile.release]
 strip = true
 lto = "thin"

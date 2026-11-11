@@ -132,6 +132,22 @@ middlemic.exe devices          # list device names
 middlemic.exe run --input "Headset Microphone" --output "CABLE Input"   # no window, saved settings
 ```
 
+## Profiling
+
+`--profile` runs a clip through the real chain with no window and prints, per stage, the p50, p99 and
+max time per 10 ms hop and its share of the budget. It also reports deadline misses, RSS and heap
+allocations per hop. The first 100 hops are warm-up and are discarded. Without a clip it uses
+synthetic noisy speech; a clip shorter than the run loops. Only 48 kHz WAV is read.
+
+```sh
+cargo run --release --features profile -- --profile --hops 2000   # allocation counts need the feature
+middlemic.exe --profile take.wav --hops 5000 --json > baseline.json   # diff against a later run
+middlemic.exe --profile --loop    # repeats until killed, for samply or WPA to attach
+```
+
+RSS is read on Linux only; Windows shows n/a. DPDFNet needs its model and ONNX Runtime
+(`MIDDLEMIC_MODELS`, `ORT_DYLIB_PATH`) as for the tests.
+
 ## Testing with a recording
 
 The ignored tests run a real recording (anything `symphonia` can decode, such as `.m4a`)

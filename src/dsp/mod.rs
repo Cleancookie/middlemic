@@ -117,6 +117,11 @@ pub trait Processor: Send {
     fn load(&self) -> f32 {
         0.0
     }
+
+    /// Wall time of the latest `process` call. Only a [`Timed`] stage measures it.
+    fn last_time(&self) -> Duration {
+        Duration::ZERO
+    }
 }
 
 /// How much of each new measurement enters the smoothed load.
@@ -128,11 +133,12 @@ struct Timed {
     inner: Box<dyn Processor>,
     sample_rate: f32,
     load: f32,
+    last: Duration,
 }
 
 impl Timed {
     fn new(inner: Box<dyn Processor>, sample_rate: u32) -> Self {
-        Self { inner, sample_rate: sample_rate as f32, load: 0.0 }
+        Self { inner, sample_rate: sample_rate as f32, load: 0.0, last: Duration::ZERO }
     }
 }
 
@@ -154,7 +160,8 @@ impl Processor for Timed {
     fn process(&mut self, samples: &mut [f32]) {
         let started = Instant::now();
         self.inner.process(samples);
-        let seen = load_of(started.elapsed(), samples.len(), self.sample_rate);
+        self.last = started.elapsed();
+        let seen = load_of(self.last, samples.len(), self.sample_rate);
         self.load += (seen - self.load) * LOAD_SMOOTHING;
     }
 
@@ -164,6 +171,10 @@ impl Processor for Timed {
 
     fn load(&self) -> f32 {
         self.load
+    }
+
+    fn last_time(&self) -> Duration {
+        self.last
     }
 }
 
@@ -221,6 +232,11 @@ impl Chain {
         self.stages.iter().map(|(id, s)| if s.enabled() { (*id, s.latency_samples(), s.load()) } else { (*id, 0, 0.0) })
     }
 
+    /// Each stage's id and the time of its latest block; a bypassed stage has none.
+    pub fn stage_times(&self) -> impl Iterator<Item = (u64, Duration)> + '_ {
+        self.stages.iter().map(|(id, s)| (*id, if s.enabled() { s.last_time() } else { Duration::ZERO }))
+    }
+
     pub fn latency_samples(&self) -> usize {
         self.stages
             .iter()
@@ -272,6 +288,10 @@ impl LiveChain {
 
     pub fn stage_stats(&self) -> impl Iterator<Item = (u64, usize, f32)> + '_ {
         self.chain.stage_stats()
+    }
+
+    pub fn stage_times(&self) -> impl Iterator<Item = (u64, Duration)> + '_ {
+        self.chain.stage_times()
     }
 
     /// Cheap unless the rack changed or a build finished.

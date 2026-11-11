@@ -18,6 +18,7 @@ mod motion;
 mod offline;
 mod playout;
 mod presets;
+mod profile;
 mod rack;
 mod recordings_panel;
 mod render;
@@ -48,6 +49,18 @@ struct Cli {
     /// Open the window minimised. Used by "Launch when Windows starts".
     #[arg(long)]
     minimized: bool,
+    /// Headless profiler: run CLIP (or synthetic noisy speech) through the live chain and print per-stage timings.
+    #[arg(long, value_name = "CLIP.WAV", num_args = 0..=1)]
+    profile: Option<Option<std::path::PathBuf>>,
+    /// With --profile: hops to measure after 100 warm-up hops.
+    #[arg(long, default_value_t = 1000)]
+    hops: usize,
+    /// With --profile: print JSON instead of a table.
+    #[arg(long)]
+    json: bool,
+    /// With --profile: repeat forever, so an external profiler can attach.
+    #[arg(long = "loop")]
+    repeat: bool,
     /// With no command, opens the window.
     #[command(subcommand)]
     command: Option<Command>,
@@ -68,6 +81,13 @@ enum Command {
     },
 }
 
+impl Cli {
+    fn profile_args(&self) -> Option<profile::Args> {
+        let clip = self.profile.clone()?;
+        Some(profile::Args { clip, hops: self.hops, json: self.json, repeat: self.repeat })
+    }
+}
+
 #[cfg(windows)]
 fn main() -> Result<()> {
     use std::sync::Arc;
@@ -75,6 +95,10 @@ fn main() -> Result<()> {
 
     let settings = settings::Settings::new(dsp::default_sections());
     let cli = Cli::parse();
+    // The exe is a console-subsystem binary, so --profile prints to the launching console as `devices` does.
+    if let Some(args) = cli.profile_args() {
+        return profile::main(args);
+    }
     match cli.command {
         None => {
             // SAFETY: detaches the console a double-click launch created; no pointers involved.
@@ -103,6 +127,8 @@ fn main() -> Result<()> {
 
 #[cfg(not(windows))]
 fn main() -> Result<()> {
-    let _ = Cli::parse();
+    if let Some(args) = Cli::parse().profile_args() {
+        return profile::main(args);
+    }
     anyhow::bail!("middlemic only runs on Windows; build with --target x86_64-pc-windows-gnu")
 }
