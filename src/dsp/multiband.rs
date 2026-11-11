@@ -5,6 +5,12 @@ use crate::settings::{Param, Section};
 use std::sync::Arc;
 
 pub const NAME: &str = "Compressor";
+pub const ADVANCED_NAME: &str = "Compressor (Advanced)";
+
+/// Both compressor stages run the same DSP; they differ in which controls they show.
+pub fn is_compressor(kind: &str) -> bool {
+    kind == NAME || kind == ADVANCED_NAME
+}
 
 pub const LOW_XOVER: usize = 0;
 pub const HIGH_XOVER: usize = 1;
@@ -127,6 +133,14 @@ macro_rules! switches {
     };
 }
 
+/// The full version: crossovers, three bands and a master, all tunable.
+pub fn advanced_section() -> Section {
+    let mut section = section().always_advanced();
+    section.name = ADVANCED_NAME;
+    section.help = "Splits your voice into Low, Mid and High bands, compresses each, then a Master compressor works on the sum. Every setting is yours to tune. Use Compressor for a single simple control.";
+    section
+}
+
 pub fn section() -> Section {
     let mut params = vec![
         Param::new("Low crossover", "Hz", 60.0, 800.0, 200.0).log().help(
@@ -152,7 +166,7 @@ pub fn section() -> Section {
     Section::new(NAME, params)
         .help(
             "Evens out your volume by turning down the loud parts, so whispers and shouts sit closer together. \
-             Advanced splits your voice into Low, Mid and High bands, compresses each, then a Master compressor works on the sum.",
+             One Amount control does the job; Compressor (Advanced) gives the full controls.",
         )
         .with_reduction_meters(&STRIPS)
         .with_level_meters(STRIPS.len() * 2)
@@ -166,7 +180,7 @@ pub fn section() -> Section {
         .with_simple(
             vec![Param::new("Amount", "%", 0.0, 100.0, 50.0).help(
                 "How much to even out your volume, in one control: higher turns loud parts down harder, \
-                 and adds make-up volume so you do not get quieter. Start at 50. Tick Advanced for the full controls.",
+                 and adds make-up volume so you do not get quieter. Start at 50.",
             )],
             &[
                 ("Gentle", 25.0, "A light touch that keeps your natural dynamics. Sets Amount to 25%."),

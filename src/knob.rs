@@ -16,7 +16,7 @@ const SWEEP: f32 = 1.5 * PI;
 const DRAG_PIXELS: f32 = 160.0;
 const FINE_DRAG_PIXELS: f32 = 800.0;
 const SCROLL_PIXELS: f32 = 1500.0;
-const HINT: &str = "Drag, scroll, shift for fine, double-click resets";
+const HINT: &str = "Drag, scroll, shift for fine, double-click resets, right-click for more";
 
 fn angle(norm: f32) -> f32 {
     START + SWEEP * norm
@@ -33,22 +33,64 @@ fn arc(centre: Pos2, from: f32, to: f32) -> Vec<Pos2> {
 }
 
 /// New position after the user's input, or `None` if nothing changed.
-fn turned(norm: f32, drag_up: f32, scroll_up: f32, fine: bool) -> Option<f32> {
+/// `limited` keeps it on the dial; otherwise it may run past either end.
+fn turned(norm: f32, drag_up: f32, scroll_up: f32, fine: bool, limited: bool) -> Option<f32> {
     let per_pixel = 1.0 / if fine { FINE_DRAG_PIXELS } else { DRAG_PIXELS };
     let delta = drag_up * per_pixel + scroll_up / SCROLL_PIXELS;
-    (delta != 0.0).then(|| (norm + delta).clamp(0.0, 1.0))
+    (delta != 0.0).then(|| if limited { (norm + delta).clamp(0.0, 1.0) } else { norm + delta })
 }
 
 /// Space under a knob's label, between grid rows.
 const ROW_GAP: f32 = 8.0;
 
+fn label_width(ui: &Ui, label: &str) -> f32 {
+    let text = label.to_uppercase();
+    let galley = ui.painter().layout_no_wrap(text.clone(), egui::FontId::proportional(9.5), theme::TEXT_DIM);
+    galley.size().x + 0.8 * text.chars().count() as f32 + 4.0
+}
+
+/// A dialog for typing an exact value. Enter applies it, Escape or a click outside cancels.
+fn edit_modal(ui: &Ui, id: egui::Id, param: &Param, label: &str) {
+    let Some(mut text) = ui.data(|d| d.get_temp::<String>(id)) else { return };
+    let mut done = false;
+    let modal = egui::Modal::new(id).show(ui.ctx(), |ui| {
+        ui.set_width(220.0);
+        ui.heading(label);
+        let unit = if param.unit.is_empty() { String::new() } else { format!(" ({})", param.unit) };
+        ui.label(format!("Value{unit}"));
+        let field = ui.add(egui::TextEdit::singleline(&mut text).desired_width(f32::INFINITY));
+        field.request_focus();
+        if !param.is_unlimited() {
+            ui.label(egui::RichText::new(format!("{} to {}", param.min, param.max)).size(10.5).color(theme::TEXT_DIM));
+        }
+        let valid = text.trim().parse::<f32>().ok().filter(|v| v.is_finite());
+        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.horizontal(|ui| {
+            if (ui.add_enabled(valid.is_some(), egui::Button::new("OK")).clicked() || enter) && valid.is_some() {
+                param.set(valid.unwrap_or_default());
+                done = true;
+            }
+            if ui.button("Cancel").clicked() {
+                done = true;
+            }
+        });
+    });
+    if done || modal.should_close() {
+        ui.data_mut(|d| d.remove::<String>(id));
+    } else {
+        ui.data_mut(|d| d.insert_temp(id, text));
+    }
+}
+
 /// Draws the knob with `label` underneath; the label shows the value while hovered or dragged.
 pub fn knob(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Response {
+    // Long names such as "MAX REDUCTION" widen the cell rather than spill over the neighbours.
+    let width = WIDTH.max(label_width(ui, label));
     ui.vertical(|ui| {
-        ui.set_width(WIDTH);
+        ui.set_width(width);
         // Label hugs its dial; the gap to the next row's label comes after the value instead.
         ui.spacing_mut().item_spacing.y = 0.0;
-        let (rect, response) = ui.allocate_exact_size(vec2(WIDTH, SIZE),Sense::click_and_drag());
+        let (rect, response) = ui.allocate_exact_size(vec2(width, SIZE), Sense::click_and_drag());
         let centre = rect.center();
 
         let fine = ui.input(|i| i.modifiers.shift);
@@ -57,14 +99,30 @@ pub fn knob(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Re
         } else {
             0.0
         };
-        if let Some(n) = turned(param.to_norm(param.get()), -response.drag_delta().y, scroll, fine) {
+        if let Some(n) = turned(param.to_norm(param.get()), -response.drag_delta().y, scroll, fine, !param.is_unlimited()) {
             param.set(param.from_norm(n));
         }
         if response.double_clicked() {
             param.reset();
         }
 
-        let norm = param.to_norm(param.get());
+        let edit_id = response.id.with("edit");
+        response.context_menu(|ui| {
+            if ui.button("Edit value…").clicked() {
+                ui.data_mut(|d| d.insert_temp(edit_id, format!("{}", param.get())));
+                ui.close();
+            }
+            let mut unlimited = param.is_unlimited();
+            if ui.checkbox(&mut unlimited, "Remove min/max limit").changed() {
+                param.set_unlimited(unlimited);
+            }
+            ui.label(egui::RichText::new("Values outside the normal range are unsupported.").size(10.5).color(theme::TEXT_DIM));
+        });
+
+        edit_modal(ui, edit_id, param, label);
+
+        let overshoot = param.is_unlimited() && !(param.min..=param.max).contains(&param.get());
+        let norm = param.to_norm(param.get()).clamp(0.0, 1.0);
         // Knobs with a negative side fill from the middle, like a pan knob.
         let origin = if param.min < 0.0 && param.max > 0.0 {
             param.to_norm(0.0)
@@ -76,13 +134,13 @@ pub fn knob(ui: &mut Ui, param: &Param, label: &str, color: Color32) -> egui::Re
         painter.add(Shape::line(arc(centre, 0.0, 1.0), Stroke::new(2.5, theme::GRID_STRONG)));
         painter.circle_filled(centre, RADIUS - 5.0, theme::PANEL.lerp_to_gamma(theme::GRID, hover));
         if (norm - origin).abs() > 0.002 {
-            painter.add(Shape::line(arc(centre, origin, norm), Stroke::new(3.0, color)));
+            painter.add(Shape::line(arc(centre, origin, norm), Stroke::new(3.0, if overshoot { theme::WARN } else { color })));
         }
         let a = angle(norm);
         let dir = vec2(a.cos(), a.sin());
         painter.line_segment(
             [centre + dir * (RADIUS * 0.15), centre + dir * (RADIUS * 0.6)],
-            Stroke::new(2.0, theme::TEXT),
+            Stroke::new(2.0, if overshoot { theme::WARN } else { theme::TEXT }),
         );
 
         // Like Vital: only the label shows, and it gives way to the value while you point at or turn the knob.
@@ -109,27 +167,33 @@ mod tests {
 
     #[test]
     fn dragging_up_raises_and_clamps() {
-        assert!(turned(0.5, 16.0, 0.0, false).unwrap() > 0.5);
-        assert!(turned(0.5, -16.0, 0.0, false).unwrap() < 0.5);
-        assert_eq!(turned(0.99, 500.0, 0.0, false), Some(1.0));
-        assert_eq!(turned(0.01, -500.0, 0.0, false), Some(0.0));
+        assert!(turned(0.5, 16.0, 0.0, false, true).unwrap() > 0.5);
+        assert!(turned(0.5, -16.0, 0.0, false, true).unwrap() < 0.5);
+        assert_eq!(turned(0.99, 500.0, 0.0, false, true), Some(1.0));
+        assert_eq!(turned(0.01, -500.0, 0.0, false, true), Some(0.0));
+    }
+
+    #[test]
+    fn without_a_limit_it_runs_past_the_ends() {
+        assert!(turned(0.99, 500.0, 0.0, false, false).unwrap() > 1.0);
+        assert!(turned(0.01, -500.0, 0.0, false, false).unwrap() < 0.0);
     }
 
     #[test]
     fn shift_makes_the_same_drag_finer() {
-        let coarse = turned(0.5, 20.0, 0.0, false).unwrap() - 0.5;
-        let fine = turned(0.5, 20.0, 0.0, true).unwrap() - 0.5;
+        let coarse = turned(0.5, 20.0, 0.0, false, true).unwrap() - 0.5;
+        let fine = turned(0.5, 20.0, 0.0, true, true).unwrap() - 0.5;
         assert!(fine > 0.0 && fine < coarse / 3.0);
     }
 
     #[test]
     fn no_input_means_no_change() {
-        assert_eq!(turned(0.5, 0.0, 0.0, false), None);
+        assert_eq!(turned(0.5, 0.0, 0.0, false, true), None);
     }
 
     #[test]
     fn scroll_nudges() {
-        assert!(turned(0.5, 0.0, 120.0, false).unwrap() > 0.5);
+        assert!(turned(0.5, 0.0, 120.0, false, true).unwrap() > 0.5);
     }
 
     #[test]

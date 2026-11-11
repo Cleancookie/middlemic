@@ -170,6 +170,12 @@ struct App {
     out_meter: LevelMeter,
     /// Seconds a full level bar takes to fall; set in settings.
     meter_fall: f32,
+    debug: bool,
+    /// Whether the window's close button asks what to do; if not, `exit_on_close` decides.
+    ask_on_close: bool,
+    exit_on_close: bool,
+    confirm_close: bool,
+    remember_close_choice: bool,
     updater: Updater,
     takes: Vec<Take>,
     delete_arm: recordings_panel::DeleteArm,
@@ -216,6 +222,9 @@ const SETUP_DONE_KEY: &str = "setup.done";
 const METER_FALL_KEY: &str = "meter.fall";
 const UPDATE_CHECK_KEY: &str = "update.check";
 const SPECTRUM_OPEN_KEY: &str = "spectrum.open";
+const DEBUG_KEY: &str = "debug";
+const CLOSE_ASK_KEY: &str = "close.ask";
+const CLOSE_EXIT_KEY: &str = "close.exit";
 const PANE_TAB_KEY: &str = "spectrum.tab";
 
 impl App {
@@ -270,6 +279,11 @@ impl App {
             status: String::new(),
             in_meter: LevelMeter::default(),
             out_meter: LevelMeter::default(),
+            debug: extras.get(DEBUG_KEY).is_some_and(|v| v == "1"),
+            ask_on_close: extras.get(CLOSE_ASK_KEY).is_none_or(|v| v != "0"),
+            exit_on_close: extras.get(CLOSE_EXIT_KEY).is_some_and(|v| v == "1"),
+            confirm_close: false,
+            remember_close_choice: false,
             meter_fall: extras
                 .get(METER_FALL_KEY)
                 .and_then(|v| v.parse::<f32>().ok())
@@ -322,7 +336,7 @@ impl App {
             .settings
             .items()
             .iter()
-            .any(|i| i.kind() == dsp::multiband::NAME && i.section.open.load(std::sync::atomic::Ordering::Relaxed));
+            .any(|i| dsp::multiband::is_compressor(i.kind()) && i.section.open.load(std::sync::atomic::Ordering::Relaxed));
         if Tab::needs_analysis(self.spectrum_open, self.pane_tab, compressor_open) {
             let running = self.running() || self.player.is_some();
             self.spectrum.update(&self.settings.meters, running);
@@ -355,6 +369,9 @@ impl App {
         let fall = format!("{:.2}", self.meter_fall);
         let mut extras = vec![
             (METER_FALL_KEY, fall.as_str()),
+            (DEBUG_KEY, if self.debug { "1" } else { "0" }),
+            (CLOSE_ASK_KEY, if self.ask_on_close { "1" } else { "0" }),
+            (CLOSE_EXIT_KEY, if self.exit_on_close { "1" } else { "0" }),
             (UPDATE_CHECK_KEY, if self.check_updates_on_launch { "1" } else { "0" }),
             (SPECTRUM_OPEN_KEY, if self.spectrum_open { "1" } else { "0" }),
             (PANE_TAB_KEY, self.pane_tab.key()),
@@ -573,25 +590,27 @@ impl App {
                 self.out_meter.clear_clip();
             }
         });
-        dividers.next(ui);
-        let cpu = self.cpu.percent();
         let meters = &self.settings.meters;
-        let detail = if self.running() {
-            format!(
-                "Whole app, as a share of all cores (as Task Manager shows it)\n\
-                 DSP {:.1}% of one core\nAudio gaps: {}",
-                meters.load() * 100.0,
-                meters.dropouts()
-            )
-        } else {
-            "Whole app, as a share of all cores (as Task Manager shows it)".to_string()
-        };
-        theme::help_tooltip_with_hint(
-            ui.label(format!("CPU {cpu:.1}%")),
-            "CPU use",
-            "How hard your PC is working for middlemic. If it is high or you hear gaps, turn off heavy stages such as the AI noise removal.",
-            &detail,
-        );
+        if self.debug {
+            dividers.next(ui);
+            let cpu = self.cpu.percent();
+            let detail = if self.running() {
+                format!(
+                    "Whole app, as a share of all cores (as Task Manager shows it)\n\
+                     DSP {:.1}% of one core\nAudio gaps: {}",
+                    meters.load() * 100.0,
+                    meters.dropouts()
+                )
+            } else {
+                "Whole app, as a share of all cores (as Task Manager shows it)".to_string()
+            };
+            theme::help_tooltip_with_hint(
+                ui.label(format!("CPU {cpu:.1}%")),
+                "CPU use",
+                "How hard your PC is working for middlemic. If it is high or you hear gaps, turn off heavy stages such as the AI noise removal.",
+                &detail,
+            );
+        }
         if self.running() {
             dividers.next(ui);
             let latency = Latency::new(meters.capture_buffer_ms(), meters.latency_ms(), meters.render_buffer_ms());
@@ -781,18 +800,73 @@ impl App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
-                TrayAction::Quit => {
-                    self.quitting = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+                TrayAction::Quit => self.quit(ctx),
             }
         }
         if !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            self.in_tray = true;
-            self.hidden = true;
-            self.write_settings();
+            if self.ask_on_close {
+                self.confirm_close = true;
+            } else if self.exit_on_close {
+                self.quit(ctx);
+            } else {
+                self.close_to_tray(ctx);
+            }
+        }
+    }
+
+    fn quit(&mut self, ctx: &egui::Context) {
+        self.quitting = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    fn close_to_tray(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        self.in_tray = true;
+        self.hidden = true;
+        self.write_settings();
+    }
+
+    /// Asked when the window's close button is pressed and a tray icon can bring it back.
+    fn close_modal(&mut self, ctx: &egui::Context) {
+        if !self.confirm_close {
+            return;
+        }
+        let mut choice = None;
+        let modal = egui::Modal::new(egui::Id::unique("close-choice")).show(ctx, |ui| {
+            ui.set_width(300.0);
+            ui.heading("Close middlemic?");
+            ui.add_space(4.0);
+            ui.label("Closing the window keeps middlemic running in the system tray, so your voice keeps being processed. Click its tray icon to bring the window back.");
+            ui.add_space(6.0);
+            ui.checkbox(&mut self.remember_close_choice, "Don't ask again");
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Close to tray").clicked() {
+                    choice = Some(false);
+                }
+                if ui.button("Exit").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    self.confirm_close = false;
+                }
+            });
+        });
+        if modal.should_close() {
+            self.confirm_close = false;
+        }
+        if let Some(exit) = choice {
+            self.confirm_close = false;
+            if self.remember_close_choice {
+                self.ask_on_close = false;
+                self.exit_on_close = exit;
+            }
+            if exit {
+                self.quit(ctx);
+            } else {
+                self.close_to_tray(ctx);
+            }
         }
     }
 
@@ -835,6 +909,8 @@ impl App {
                 running: self.engine.as_ref().is_some_and(Engine::is_running),
                 autostart: self.autostart,
                 meter_fall: &mut self.meter_fall,
+                debug: &mut self.debug,
+                ask_on_close: &mut self.ask_on_close,
                 update: settings_page::UpdateView {
                     version: self.updater.current(),
                     status: &status,
@@ -1097,6 +1173,7 @@ fn peak_to_fraction(peak: f32) -> f32 {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        crate::debug::set(self.debug);
         if let Some(engine) = &self.engine {
             if !engine.is_running() {
                 self.status = engine
@@ -1106,6 +1183,7 @@ impl eframe::App for App {
         }
         let ctx = ui.ctx().clone();
         self.handle_tray(&ctx);
+        self.close_modal(&ctx);
         self.hidden = self.in_tray || ctx.input(|i| i.viewport().minimized == Some(true));
         self.save_if_changed();
         self.update_levels();
@@ -1187,28 +1265,20 @@ impl eframe::App for App {
                     let section = &item.section;
                     if item.kind() == dsp::EQ_NAME {
                         eq_panel.ui(ui, section);
-                    } else if item.kind() == dsp::multiband::NAME {
+                    } else if dsp::multiband::is_compressor(item.kind()) {
                         compressor_panel::ui(ui, section, reductions, &spectrum);
                     } else if item.kind() == dsp::feedback::NAME {
                         let position = items.iter().position(|i| i.id == item.id).unwrap_or(0);
                         feedback_panel::ui(ui, section, theme::accent(position, items.len()));
-                    } else if item.kind() == dsp::DPDFNET.name {
-                        model_row(ui, model_download);
-                        section_body(ui, section, reductions);
                     } else {
-                        section_body(ui, section, reductions);
+                        let position = items.iter().position(|i| i.id == item.id).unwrap_or(0);
+                        let accent = theme::accent(position, items.len());
+                        if item.kind() == dsp::DPDFNET.name {
+                            model_row(ui, model_download);
+                        }
+                        section_body(ui, section, reductions, accent);
                     }
                 });
-                ui.add_space(8.0);
-                let reset_all = ui.small_button("Reset all stages");
-                if reset_all.clicked() {
-                    self.settings.reset();
-                }
-                theme::help_tooltip(
-                    reset_all,
-                    "Reset all stages",
-                    "Puts every control in every stage back to its starting value. The stages and their order stay as they are.",
-                );
             });
         });
 

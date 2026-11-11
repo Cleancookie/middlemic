@@ -39,6 +39,8 @@ pub struct View<'a> {
     pub autostart: bool,
     /// Seconds a full level bar takes to fall to empty.
     pub meter_fall: &'a mut f32,
+    pub debug: &'a mut bool,
+    pub ask_on_close: &'a mut bool,
     pub update: UpdateView<'a>,
     pub storage: &'a [Entry],
     /// The outcome of the last action, if it failed.
@@ -179,12 +181,28 @@ impl Page {
                 action = Some(found);
             }
 
+            section(ui, "Window");
+            let ask = ui.checkbox(view.ask_on_close, "Ask when closing the window");
+            theme::help_tooltip(
+                ask,
+                "Ask when closing the window",
+                "Closing the window keeps middlemic running in the tray. Untick to stop being asked: it then repeats the choice you made last in the question.",
+            );
+
             section(ui, "Meters");
             let fall = ui.add(egui::Slider::new(view.meter_fall, crate::level::FALL_RANGE).suffix(" s").text("Level bar fall time"));
             theme::help_tooltip(
                 fall,
                 "Level bar fall time",
                 "How long the Input and Output bars take to drop from full to empty. Higher is slower and easier to read; the bars always jump up at once.",
+            );
+
+            section(ui, "Debug");
+            let debug = ui.checkbox(view.debug, "Debug mode");
+            theme::help_tooltip(
+                debug,
+                "Debug mode",
+                "Shows the CPU figure and each stage's load and delay, and measures them while middlemic runs. Leave it off for the leanest audio path.",
             );
 
             section(ui, "Storage");
@@ -253,7 +271,7 @@ mod tests {
             |ui| {
                 page.show(
                     ui,
-                    View { inputs: &inputs, outputs: &outputs, input: &mut input, output: &mut output, running: false, autostart: false, meter_fall: &mut 1.5, update: UpdateView { version: "dev", status: &Status::Idle, error: "", check_on_launch: true }, storage: entries, error: "" },
+                    View { inputs: &inputs, outputs: &outputs, input: &mut input, output: &mut output, running: false, autostart: false, meter_fall: &mut 1.5, debug: &mut false, ask_on_close: &mut true, update: UpdateView { version: "dev", status: &Status::Idle, error: "", check_on_launch: true }, storage: entries, error: "" },
                 );
                 right = ui.min_rect().right();
             },

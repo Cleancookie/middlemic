@@ -1,7 +1,7 @@
 //! The stage list, laid out like an FX chain rack: one framed row per stage with a bypass
 //! switch, name, latency and remove cross. Click the row to unfold its controls; drag it to reorder.
 
-use crate::icons::cross_button;
+use crate::icons::{cross_button, gear_button};
 use crate::latency::load_text;
 use crate::settings::{Item, Param, Removed, Section, Settings};
 use crate::theme;
@@ -123,18 +123,11 @@ fn latency_text(ms: f32) -> String {
     if ms >= 9.5 { format!("{ms:.0} ms") } else if ms > 0.0 { format!("{ms:.1} ms") } else { "0 ms".to_string() }
 }
 
-/// Advanced and Reset, at the top of an unfolded row.
-fn stage_buttons(ui: &mut Ui, section: &Section) {
-    ui.horizontal(|ui| {
-        if !section.simple.is_empty() {
-            let mut advanced = section.advanced.load(Ordering::Relaxed);
-            let toggle = ui.checkbox(&mut advanced, "Advanced");
-            if toggle.changed() {
-                section.advanced.store(advanced, Ordering::Relaxed);
-            }
-            theme::help_tooltip(toggle, "Advanced", "Off: a single simple control does the job. On: every setting is yours to tune.");
-        }
-        let reset = ui.small_button("Reset");
+/// The cog beside the cross: a menu of things to do to the whole stage.
+fn stage_menu(ui: &mut Ui, section: &Section) {
+    let gear = theme::help_tooltip(gear_button(ui), "Stage menu", "Actions for this stage.");
+    egui::Popup::menu(&gear).show(|ui| {
+        let reset = ui.button("Reset stage");
         if reset.clicked() {
             section.reset();
         }
@@ -191,13 +184,16 @@ fn item_row(ui: &mut Ui, item: &Item, accent: Color32, body: impl FnOnce(&mut Ui
                         "Remove",
                         "Takes this stage out of the rack. An Undo link appears for a few seconds.",
                     );
-                    let delay = if on { latency_text(section.latency_ms()) } else { "off".to_string() };
-                    theme::help_tooltip(
-                        ui.label(egui::RichText::new(delay).color(theme::TEXT_DIM).monospace()),
-                        "Delay",
-                        "How much later your voice comes out because of this stage. Stages that react instantly add none.",
-                    );
-                    if on {
+                    stage_menu(ui, section);
+                    if crate::debug::enabled() {
+                        let delay = if on { latency_text(section.latency_ms()) } else { "off".to_string() };
+                        theme::help_tooltip(
+                            ui.label(egui::RichText::new(delay).color(theme::TEXT_DIM).monospace()),
+                            "Delay",
+                            "How much later your voice comes out because of this stage. Stages that react instantly add none.",
+                        );
+                    }
+                    if on && crate::debug::enabled() {
                         theme::help_tooltip(
                             ui.label(egui::RichText::new(load_text(section.load())).color(theme::TEXT_DIM).monospace()),
                             "Processing load",
@@ -218,7 +214,6 @@ fn item_row(ui: &mut Ui, item: &Item, accent: Color32, body: impl FnOnce(&mut Ui
             }
             if open || open_t > 0.0 {
                 fold_body(ui, id.with("body"), strip.bottom(), open_t, |ui| {
-                    stage_buttons(ui, section);
                     body(ui, &reductions);
                 });
             }
@@ -385,8 +380,8 @@ impl Rack {
     }
 }
 
-/// The plain controls: gain-reduction bars, quick picks and sliders.
-pub fn section_body(ui: &mut Ui, section: &Section, reductions: &[f32]) {
+/// The plain controls: gain-reduction bars, quick picks and knobs.
+pub fn section_body(ui: &mut Ui, section: &Section, reductions: &[f32], accent: Color32) {
     let status = section.status();
     if !status.is_empty() {
         ui.colored_label(theme::ERROR, status);
@@ -406,7 +401,6 @@ pub fn section_body(ui: &mut Ui, section: &Section, reductions: &[f32]) {
         });
     }
     ui.add_enabled_ui(section.is_enabled(), |ui| {
-        ui.spacing_mut().slider_width = 220.0;
         let shown: &[Param] = if section.is_advanced() {
             &section.params
         } else {
@@ -423,22 +417,12 @@ pub fn section_body(ui: &mut Ui, section: &Section, reductions: &[f32]) {
                 }
             });
         }
-        for p in shown {
-            let mut v = p.get();
-            // The label is drawn here rather than by `Slider::text` so it can carry the tooltip too.
-            ui.horizontal(|ui| {
-                let slider = egui::Slider::new(&mut v, p.min..=p.max)
-                    .suffix(format!(" {}", p.unit))
-                    .logarithmic(p.log);
-                let response = ui.add(slider);
-                if response.changed() {
-                    p.set(v);
-                }
-                theme::param_tooltip(response, p, "");
-                let name = ui.add(egui::Label::new(p.name).wrap_mode(egui::TextWrapMode::Extend));
-                theme::param_tooltip(name, p, "");
-            });
-        }
+        let color = if section.is_enabled() { accent } else { theme::OUTLINE_OFF };
+        ui.horizontal_wrapped(|ui| {
+            for p in shown {
+                crate::knob::knob(ui, p, p.name, color);
+            }
+        });
     });
 }
 
@@ -483,7 +467,7 @@ mod tests {
                 let header = rack_item(ui, &item, theme::accent(0, 1), |ui, reductions| {
                     self.body_drawn.set(true);
                     *self.shown_reductions.borrow_mut() = reductions.to_vec();
-                    section_body(ui, section, reductions);
+                    section_body(ui, section, reductions, theme::accent(0, 1));
                 });
                 self.header.set(header.header.rect);
                 self.power.set(header.power.rect);
@@ -544,7 +528,7 @@ mod tests {
                 ..Default::default()
             };
             let _ = self.ctx.run_ui(input, |ui| {
-                self.rack.borrow_mut().show(ui, &self.settings, |ui, item, r| section_body(ui, &item.section, r));
+                self.rack.borrow_mut().show(ui, &self.settings, |ui, item, r| section_body(ui, &item.section, r, theme::accent(0, 1)));
             });
         }
 
@@ -703,7 +687,7 @@ mod tests {
         let mut rack = Rack::default();
         for _ in 0..30 {
             let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-                rack.show(ui, &settings, |ui, item, r| section_body(ui, &item.section, r));
+                rack.show(ui, &settings, |ui, item, r| section_body(ui, &item.section, r, theme::accent(0, 1)));
             });
         }
         assert!(rack.rows[0].height() > rack.rows[1].height() + 20.0, "{:?}", rack.rows);
@@ -835,7 +819,7 @@ mod tests {
             for item in settings.items() {
                 rack_item(ui, &item, theme::accent(0, 1), |ui, r| {
                     drawn.set(drawn.get() + 1);
-                    section_body(ui, &item.section, r);
+                    section_body(ui, &item.section, r, theme::accent(0, 1));
                 });
             }
         });

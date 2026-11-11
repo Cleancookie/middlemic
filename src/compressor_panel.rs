@@ -70,7 +70,7 @@ pub struct Drawn {
 /// `spectrum` is the output spectrum as heights 0..1 along `freq_to_x`, or empty when stopped.
 pub fn ui(ui: &mut Ui, section: &Section, reductions: &[f32], spectrum: &[f32]) -> Drawn {
     if !section.is_advanced() {
-        section_body(ui, section, &reductions[..MASTER.min(reductions.len())]);
+        section_body(ui, section, &reductions[..MASTER.min(reductions.len())], strip_color(MASTER));
         return Drawn { graph: Rect::NOTHING, tab: MASTER };
     }
     let tab_id = ui.make_persistent_id("compressor-tab");

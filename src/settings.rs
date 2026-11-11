@@ -28,6 +28,8 @@ pub struct Param {
     /// Plain-language tooltip body: what it does and where to start. Empty shows only the name.
     pub help: &'static str,
     value: AtomicU32,
+    /// The user removed the min/max limit for this session. Not saved, and loading still clamps.
+    unlimited: AtomicBool,
 }
 
 impl Param {
@@ -41,6 +43,7 @@ impl Param {
             log: false,
             help: "",
             value: AtomicU32::new(default.to_bits()),
+            unlimited: AtomicBool::new(false),
         }
     }
 
@@ -60,7 +63,23 @@ impl Param {
     }
 
     pub fn set(&self, v: f32) {
-        self.value.store(v.clamp(self.min, self.max).to_bits(), Relaxed);
+        let v = if self.is_unlimited() { self.floor(v) } else { v.clamp(self.min, self.max) };
+        self.value.store(v.to_bits(), Relaxed);
+    }
+
+    /// Log params cannot go to zero or below.
+    fn floor(&self, v: f32) -> f32 {
+        if self.log { v.max(1e-6) } else { v }
+    }
+
+    pub fn is_unlimited(&self) -> bool {
+        self.unlimited.load(Relaxed)
+    }
+
+    /// Lets the value leave `min..=max`. Switching it off pulls the value back in range.
+    pub fn set_unlimited(&self, on: bool) {
+        self.unlimited.store(on, Relaxed);
+        self.set(self.get());
     }
 
     pub fn reset(&self) {
@@ -68,17 +87,19 @@ impl Param {
     }
 
     /// Position of `value` along the control, `0..=1` (logarithmic for frequencies).
+    /// Past the ends when the limit is removed.
     pub fn to_norm(&self, value: f32) -> f32 {
         let n = if self.log {
-            (value.max(self.min).ln() - self.min.ln()) / (self.max.ln() - self.min.ln())
+            (self.floor(value.max(if self.is_unlimited() { 0.0 } else { self.min })).ln() - self.min.ln())
+                / (self.max.ln() - self.min.ln())
         } else {
             (value - self.min) / (self.max - self.min)
         };
-        n.clamp(0.0, 1.0)
+        if self.is_unlimited() { n } else { n.clamp(0.0, 1.0) }
     }
 
     pub fn from_norm(&self, n: f32) -> f32 {
-        let n = n.clamp(0.0, 1.0);
+        let n = if self.is_unlimited() { n } else { n.clamp(0.0, 1.0) };
         if self.log {
             (self.min.ln() + n * (self.max.ln() - self.min.ln())).exp()
         } else {
@@ -135,6 +156,8 @@ pub struct Section {
     /// One line on what the stage is for, shown in the + menu and on the row's name.
     pub help: &'static str,
     pub advanced: AtomicBool,
+    /// Set for a stage that is only ever the full version, so reset leaves it advanced.
+    always_advanced: bool,
     /// Whether the stage is unfolded in the rack. Saved with the other settings.
     pub open: AtomicBool,
     /// A problem the stage wants the user to see, such as a missing model file. Empty when fine.
@@ -163,6 +186,7 @@ impl Section {
             quick_picks: Vec::new(),
             help: "",
             advanced: AtomicBool::new(false),
+            always_advanced: false,
             open: AtomicBool::new(false),
             status: std::sync::Mutex::new(String::new()),
             latency_ms: AtomicU32::new(0),
@@ -209,6 +233,13 @@ impl Section {
     }
 
     /// Give the stage a Simple mode. It starts in Simple; `params` become the Advanced view.
+    /// Makes the stage the full version for good: it reads `params` and has no Simple mode to go back to.
+    pub fn always_advanced(mut self) -> Self {
+        self.advanced.store(true, Relaxed);
+        self.always_advanced = true;
+        self
+    }
+
     pub fn with_simple(mut self, simple: Vec<Param>, quick_picks: &[(&'static str, f32, &'static str)]) -> Self {
         self.simple = simple;
         self.quick_picks = quick_picks.to_vec();
@@ -298,7 +329,7 @@ impl Section {
 
     pub fn reset(&self) {
         self.enabled.store(self.default_enabled, Relaxed);
-        self.advanced.store(false, Relaxed);
+        self.advanced.store(self.always_advanced, Relaxed);
         self.params.iter().chain(&self.simple).for_each(Param::reset);
     }
 }
@@ -503,14 +534,22 @@ pub fn rack_from_text(text: &str) -> Option<Vec<Item>> {
             continue;
         };
         let value = |key| lines.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
-        let Some(section) = value("kind").and_then(crate::dsp::new_section) else {
+        // Before the compressor split into two stages, Advanced was a tickbox on it.
+        let kind = value("kind").map(|k| match (k, value("advanced")) {
+            (crate::dsp::multiband::NAME, Some("true")) => crate::dsp::multiband::ADVANCED_NAME,
+            _ => k,
+        });
+        let Some(section) = kind.and_then(crate::dsp::new_section) else {
             continue;
         };
         if items.iter().any(|i| i.id == id) {
             continue;
         }
         lines.iter().for_each(|(k, v)| apply_key(&section, k, v));
-        let name = value("name").filter(|n| !n.is_empty()).unwrap_or(section.name).to_string();
+        let name = value("name")
+            .filter(|n| !n.is_empty() && *n != crate::dsp::multiband::NAME || section.name == crate::dsp::multiband::NAME)
+            .unwrap_or(section.name)
+            .to_string();
         items.push(Item { id, name, section: Arc::new(section) });
     }
     Some(items)
@@ -744,11 +783,6 @@ impl Settings {
             .clone()
     }
 
-    /// Every stage back to its default sound. Which stages there are, and their order, stay.
-    pub fn reset(&self) {
-        self.items().iter().for_each(|i| i.section.reset());
-    }
-
     /// INI-style text: `extras`, then the rack.
     pub fn to_text(&self, extras: &[(&str, &str)]) -> String {
         let mut out: String = extras.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
@@ -807,6 +841,10 @@ mod tests {
         Settings::new(kinds.iter().map(|k| new_section(k).unwrap()).collect())
     }
 
+    fn reset_stages(settings: &Settings) {
+        settings.items().iter().for_each(|i| i.section.reset());
+    }
+
     fn names(settings: &Settings) -> Vec<String> {
         settings.items().iter().map(|i| i.name.clone()).collect()
     }
@@ -816,6 +854,27 @@ mod tests {
         let p = Param::new("x", "", 0.0, 10.0, 1.0);
         p.set(99.0);
         assert_eq!(p.get(), 10.0);
+    }
+
+    #[test]
+    fn unlimited_lets_the_value_pass_the_range_and_relimiting_pulls_it_back() {
+        let p = Param::new("x", "", 0.0, 10.0, 1.0);
+        p.set_unlimited(true);
+        p.set(99.0);
+        assert_eq!(p.get(), 99.0);
+        assert!(p.to_norm(99.0) > 1.0);
+        assert!((p.to_norm(p.from_norm(1.5)) - 1.5).abs() < 1e-5);
+        p.set_unlimited(false);
+        assert_eq!(p.get(), 10.0);
+    }
+
+    #[test]
+    fn unlimited_log_param_stays_positive() {
+        let p = Param::new("f", "Hz", 20.0, 20000.0, 100.0).log();
+        p.set_unlimited(true);
+        p.set(-5.0);
+        assert!(p.get() > 0.0);
+        assert!(p.from_norm(-0.5) < 20.0);
     }
 
     #[test]
@@ -853,19 +912,28 @@ mod tests {
         let c = a.section("Compressor");
         assert!(!c.is_advanced(), "starts in simple mode");
         c.simple[0].set(80.0);
-        c.advanced.store(true, Relaxed);
-        c.params[0].set(600.0);
 
         let b = rack(&["Compressor"]);
         b.apply_text(&a.to_text(&[]));
-        let c = b.section("Compressor");
-        assert!(c.is_advanced());
-        assert_eq!(c.simple[0].get(), 80.0);
-        assert_eq!(c.params[0].get(), 600.0);
+        assert_eq!(b.section("Compressor").simple[0].get(), 80.0);
+        reset_stages(&b);
+        assert_eq!(b.section("Compressor").simple[0].get(), 50.0);
+    }
 
-        b.reset();
-        assert!(!c.is_advanced());
-        assert_eq!(c.simple[0].get(), 50.0);
+    #[test]
+    fn the_advanced_compressor_stays_advanced_through_save_and_reset() {
+        let a = rack(&["Compressor (Advanced)"]);
+        let c = a.section("Compressor (Advanced)");
+        assert!(c.is_advanced());
+        c.params[0].set(600.0);
+
+        let b = rack(&["Compressor (Advanced)"]);
+        b.apply_text(&a.to_text(&[]));
+        let c = b.section("Compressor (Advanced)");
+        assert_eq!(c.params[0].get(), 600.0);
+        reset_stages(&b);
+        assert!(c.is_advanced());
+        assert_eq!(c.params[0].get(), c.params[0].default);
     }
 
     #[test]
@@ -1076,7 +1144,7 @@ Low crossover=300
         let s = rack(&["Mic boost", "EQ"]);
         s.add(new_section("Mic boost").unwrap()).section.params[0].set(9.0);
         s.move_item(2, 0);
-        s.reset();
+        reset_stages(&s);
         assert_eq!(names(&s), ["Mic boost 2", "Mic boost", "EQ"]);
         assert_eq!(s.section("Mic boost 2").params[0].get(), 0.0);
     }
@@ -1094,7 +1162,7 @@ Low crossover=300
         assert!(!b.section("EQ").open.load(Relaxed), "saved fold wins over the default");
         assert!(b.section("Limiter").open.load(Relaxed));
 
-        b.reset();
+        reset_stages(&b);
         assert!(b.section("Limiter").open.load(Relaxed), "Reset is about sound, not layout");
     }
 

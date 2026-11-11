@@ -5,6 +5,7 @@ mod audio;
 mod compressor_panel;
 #[cfg(windows)]
 mod cpu;
+mod debug;
 mod dsp;
 mod eq_panel;
 mod feedback_panel;
@@ -98,6 +99,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     // The exe is a console-subsystem binary, so --profile prints to the launching console as `devices` does.
     if let Some(args) = cli.profile_args() {
+        debug::set(true);
         return profile::main(args);
     }
     match cli.command {
@@ -129,6 +131,7 @@ fn main() -> Result<()> {
 #[cfg(not(windows))]
 fn main() -> Result<()> {
     if let Some(args) = Cli::parse().profile_args() {
+        debug::set(true);
         return profile::main(args);
     }
     anyhow::bail!("middlemic only runs on Windows; build with --target x86_64-pc-windows-gnu")

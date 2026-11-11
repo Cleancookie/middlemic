@@ -344,10 +344,12 @@ fn dsp_loop(
             input.pop_slice(&mut mono);
             meters.record_input(peak(&mono));
             meters.input_scope.write(&mono);
-            let started = Instant::now();
+            let started = crate::debug::enabled().then(Instant::now);
             chain.process(&mut mono);
             // Fraction of the 10 ms frame budget, lightly smoothed for the UI.
-            load += (started.elapsed().as_secs_f32() / 0.010 - load) * 0.1;
+            if let Some(started) = started {
+                load += (started.elapsed().as_secs_f32() / 0.010 - load) * 0.1;
+            }
             hops += 1;
             if hops % STATS_EVERY_HOPS == 0 {
                 meters.set_load(load);

@@ -29,13 +29,14 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 /// Every kind of stage with a maker for its controls, in the default rack's order.
-const KINDS: [(&str, fn() -> Section); 7] = [
+const KINDS: [(&str, fn() -> Section); 8] = [
     (feedback::NAME, feedback::section),
     (dpdfnet::LIGHT.name, || dpdfnet::section(dpdfnet::LIGHT)),
     (gain::NAME, gain::section),
     (eq::NAME, eq::section),
     (deesser::NAME, deesser::section),
     (multiband::NAME, multiband::section),
+    (multiband::ADVANCED_NAME, multiband::advanced_section),
     (limiter::NAME, limiter::section),
 ];
 
@@ -51,7 +52,7 @@ pub fn new_section(kind: &str) -> Option<Section> {
 
 /// One stage of each kind, as a fresh install starts.
 pub fn default_sections() -> Vec<Section> {
-    KINDS.iter().map(|(_, make)| make()).collect()
+    KINDS.iter().filter(|(name, _)| *name != multiband::ADVANCED_NAME).map(|(_, make)| make()).collect()
 }
 
 /// The frequency of the first enabled de-esser, if any: where the spectrogram marks that the
@@ -71,7 +72,7 @@ fn build_stage(section: Arc<Section>, sample_rate: u32) -> Result<Box<dyn Proces
         gain::NAME => Box::new(Gain::new(section)),
         eq::NAME => Box::new(Eq::new(section)),
         deesser::NAME => Box::new(DeEsser::new(section)),
-        multiband::NAME => Box::new(Multiband::new(section)),
+        multiband::NAME | multiband::ADVANCED_NAME => Box::new(Multiband::new(section)),
         limiter::NAME => Box::new(Limiter::new(section)),
         other => anyhow::bail!("no stage is known for the section {other:?}"),
     };
@@ -152,6 +153,10 @@ impl Processor for Timed {
     }
 
     fn process(&mut self, samples: &mut [f32]) {
+        if !crate::debug::enabled() {
+            self.inner.process(samples);
+            return;
+        }
         let started = Instant::now();
         self.inner.process(samples);
         self.last = started.elapsed();
@@ -458,7 +463,7 @@ mod tests {
 
     #[test]
     fn every_kind_has_a_stage_and_unknown_ones_are_an_error() {
-        assert_eq!(kinds().count(), default_sections().len());
+        assert_eq!(kinds().count(), default_sections().len() + 1, "the advanced compressor is added by hand");
         assert!(kinds().all(|k| new_section(k).is_some_and(|s| s.name == k)));
         assert!(new_section("Mystery").is_none());
         assert!(build_chain(&Settings::new(default_sections()), 48_000).is_ok());
@@ -499,6 +504,7 @@ mod tests {
 
     #[test]
     fn a_timed_stage_reports_its_share_and_a_bypassed_one_none() {
+        crate::debug::set(true);
         let sleepy = Box::new(Sleepy(Duration::from_millis(2)));
         let mut timed = Timed::new(sleepy, 48_000);
         assert_eq!(timed.load(), 0.0, "nothing measured yet");
