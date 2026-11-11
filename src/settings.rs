@@ -202,13 +202,6 @@ impl Section {
         }
     }
 
-    /// Start switched off, and return to off on reset.
-    pub fn off_by_default(mut self) -> Self {
-        self.default_enabled = false;
-        self.enabled.store(false, Relaxed);
-        self
-    }
-
     /// Start unfolded in the rack (stages are folded by default).
     pub fn unfolded(self) -> Self {
         self.open.store(true, Relaxed);
@@ -718,7 +711,7 @@ impl Settings {
 
     /// Apply an order saved by name, from before stages had ids. Unknown names are skipped and
     /// stages missing from the list go back to their usual position, so a stage added in a
-    /// later version (echo cancellation, which must come first) is not exiled to the end.
+    /// later version (feedback suppressor, which must come first) is not exiled to the end.
     fn set_order_by_names(&self, names: &str) {
         self.edit(|rack| {
             let mut order: Vec<usize> = Vec::new();
@@ -982,10 +975,9 @@ Low crossover=300
         assert!(!extras.contains_key("order"));
         let kinds: Vec<_> = s.items().iter().map(|i| i.kind()).collect();
         assert_eq!(kinds[0], "Feedback suppressor", "a stage the file never knew keeps its place");
-        assert_eq!(kinds[3..6], ["Mic boost", "De-esser", "EQ"], "saved order kept");
-        assert_eq!(names(&s).len(), 8);
+        assert_eq!(kinds[2..5], ["Mic boost", "De-esser", "EQ"], "saved order kept");
+        assert_eq!(names(&s).len(), 7, "the retired Echo cancellation block is skipped");
 
-        assert!(s.section("Echo cancellation").is_enabled());
         let eq = s.section("EQ");
         assert!(!eq.is_enabled() && !eq.open.load(Relaxed));
         assert_eq!(eq.params[0].get(), 120.0);

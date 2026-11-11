@@ -37,7 +37,7 @@ pub fn render_file(settings: &Settings, source: &Path, target: &Path, progress: 
     if rate != wav::RATE {
         return Err(format!("{} Hz audio is not supported, only {} Hz", rate, wav::RATE));
     }
-    let mut chain = dsp::build_chain(settings, None, wav::RATE).map_err(|e| format!("{e:#}"))?;
+    let mut chain = dsp::build_chain(settings, wav::RATE).map_err(|e| format!("{e:#}"))?;
     let out = through_chain(&mut chain, &samples, progress);
     wav::write_mono(target, &out).map_err(|e| format!("could not save {}: {e}", target.display()))
 }

@@ -58,7 +58,6 @@ impl Recorder {
                             }
                         }
                     },
-                    false,
                 )?;
                 writer.finish()?;
                 failed.map_or(Ok(()), |err| Err(err.into()))
@@ -191,7 +190,7 @@ fn feed(
     looping: Arc<AtomicBool>,
 ) -> Result<()> {
     lower_priority();
-    let mut chain = LiveChain::new(settings.clone(), None, wav::RATE)?;
+    let mut chain = LiveChain::new(settings.clone(), wav::RATE)?;
     let meters = &settings.meters;
     let to_ms = 1000.0 / wav::RATE as f32;
     let (mut mono, mut stereo) = ([0f32; FRAME], [0f32; FRAME * 2]);

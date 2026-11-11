@@ -231,7 +231,7 @@ pub fn main(args: Args) -> Result<()> {
         None => synthetic_speech(10),
     };
     let settings = Settings::new(dsp::default_sections());
-    let mut live = LiveChain::new(settings.clone(), None, wav::RATE)?;
+    let mut live = LiveChain::new(settings.clone(), wav::RATE)?;
     loop {
         let report = run(&settings, &mut live, &clip, args.hops);
         if args.json {
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn a_short_synthetic_run_completes_and_loops_a_short_clip() {
         let settings = Settings::new(vec![dsp::new_section("Mic boost").unwrap()]);
-        let mut live = LiveChain::new(settings.clone(), None, wav::RATE).unwrap();
+        let mut live = LiveChain::new(settings.clone(), wav::RATE).unwrap();
         let clip = synthetic_speech(1);
         let short = &clip[..HOP * 3];
         let report = run(&settings, &mut live, short, 150);

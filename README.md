@@ -45,7 +45,6 @@ plus a scrolling spectrogram with the de-esser's frequency marked. Click its hea
 | Stage | What it does |
 | --- | --- |
 | **Feedback suppressor** | Spots speaker-to-mic howls by FFT and cuts each with a narrow notch that fades once the howl is gone. A strip shows each notch's pitch and depth. |
-| **Echo cancellation** | WebRTC AEC3, pure Rust. Removes what your speakers play from your mic. It listens to the default playback device through WASAPI loopback, so set Windows playback to your speakers or headphones, not the cable. If the cable is the default, the stage idles rather than erase your own voice. Off by default. |
 | **DPDFNet** | The noise removal: removes fans, hum, keyboard and room noise and keeps speech clear. Needs a one-time model download (see below). Adds about 50 ms and uses roughly 15% of a core. |
 | **Mic boost** | Plain gain. |
 | **EQ** | A plugin-style EQ: response curve with draggable band dots and a row of knobs per band. |
@@ -80,7 +79,7 @@ loading. Device choices are not part of a preset.
 Built in:
 
 - **Default**: one of each stage, DPDFNet on.
-- **Alex's preset**: echo cancellation, mic boost, DPDFNet, EQ and the compressor on; the de-esser and the limiter off.
+- **Alex's preset**: mic boost, DPDFNet, EQ and the compressor on; the de-esser and the limiter off.
 
 ## Settings
 

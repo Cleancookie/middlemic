@@ -6,7 +6,6 @@ mod cap;
 mod compressor;
 mod dpdfnet;
 mod deesser;
-mod echo;
 mod eq;
 pub mod feedback;
 mod gain;
@@ -15,9 +14,6 @@ pub mod multiband;
 
 #[allow(unused_imports)] // The download button is in the Windows-only window.
 pub use dpdfnet::{DpdfNet, LIGHT as DPDFNET, download_dir as model_download_dir, missing_downloads, model_installed};
-#[cfg_attr(not(windows), allow(unused_imports))]
-pub use echo::NAME as ECHO_NAME;
-pub use echo::{EchoCancel, Reference};
 pub use deesser::DeEsser;
 #[allow(unused_imports)] // EQ_NAME is used by the Windows-only window.
 pub use eq::{BANDS, Eq, NAME as EQ_NAME, response_db};
@@ -33,9 +29,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 /// Every kind of stage with a maker for its controls, in the default rack's order.
-const KINDS: [(&str, fn() -> Section); 8] = [
+const KINDS: [(&str, fn() -> Section); 7] = [
     (feedback::NAME, feedback::section),
-    (echo::NAME, echo::section),
     (dpdfnet::LIGHT.name, || dpdfnet::section(dpdfnet::LIGHT)),
     (gain::NAME, gain::section),
     (eq::NAME, eq::section),
@@ -68,12 +63,10 @@ pub fn first_deesser_hz(items: &[Arc<Item>]) -> Option<f32> {
         .map(|i| deesser::frequency_hz(&i.section))
 }
 
-/// The DSP for one stage, ready to run at `sample_rate`. `reference` is the audio going to the
-/// speakers, for echo cancellation. Loading a model can take a few hundred milliseconds.
-fn build_stage(section: Arc<Section>, reference: Option<Reference>, sample_rate: u32) -> Result<Box<dyn Processor>> {
+/// The DSP for one stage, ready to run at `sample_rate`. Loading a model can take a few hundred milliseconds.
+fn build_stage(section: Arc<Section>, sample_rate: u32) -> Result<Box<dyn Processor>> {
     let mut stage: Box<dyn Processor> = match section.name {
         feedback::NAME => Box::new(FeedbackSuppressor::new(section)),
-        echo::NAME => Box::new(EchoCancel::new(section, reference)),
         name if name == dpdfnet::LIGHT.name => Box::new(DpdfNet::new(section, dpdfnet::LIGHT)),
         gain::NAME => Box::new(Gain::new(section)),
         eq::NAME => Box::new(Eq::new(section)),
@@ -86,12 +79,11 @@ fn build_stage(section: Arc<Section>, reference: Option<Reference>, sample_rate:
     Ok(Box::new(Timed::new(stage, sample_rate)))
 }
 
-/// A chain of every stage in the rack, in running order, prepared for `sample_rate`. With
-/// `reference: None` echo cancellation never runs.
-pub fn build_chain(settings: &Settings, reference: Option<Reference>, sample_rate: u32) -> Result<Chain> {
+/// A chain of every stage in the rack, in running order, prepared for `sample_rate`.
+pub fn build_chain(settings: &Settings, sample_rate: u32) -> Result<Chain> {
     let mut chain = Chain::new();
     for item in settings.items() {
-        let stage = build_stage(item.section.clone(), reference.clone(), sample_rate)?;
+        let stage = build_stage(item.section.clone(), sample_rate)?;
         chain.stages.push((item.id, stage));
     }
     Ok(chain)
@@ -262,7 +254,6 @@ struct Built {
 pub struct LiveChain {
     chain: Chain,
     settings: Arc<Settings>,
-    reference: Option<Reference>,
     sample_rate: u32,
     /// The rack generation the chain matches.
     seen: u64,
@@ -273,10 +264,10 @@ pub struct LiveChain {
 
 impl LiveChain {
     /// Builds the whole chain on the calling thread.
-    pub fn new(settings: Arc<Settings>, reference: Option<Reference>, sample_rate: u32) -> Result<Self> {
+    pub fn new(settings: Arc<Settings>, sample_rate: u32) -> Result<Self> {
         let seen = settings.generation();
-        let chain = build_chain(&settings, reference.clone(), sample_rate)?;
-        Ok(Self { chain, settings, reference, sample_rate, seen, building: None, failed: Vec::new() })
+        let chain = build_chain(&settings, sample_rate)?;
+        Ok(Self { chain, settings, sample_rate, seen, building: None, failed: Vec::new() })
     }
 
     pub fn process(&mut self, samples: &mut [f32]) {
@@ -325,11 +316,11 @@ impl LiveChain {
             return;
         }
         let (send, receive) = mpsc::channel();
-        let (reference, sample_rate) = (self.reference.clone(), self.sample_rate);
+        let sample_rate = self.sample_rate;
         let spawned = std::thread::Builder::new().name("stage-builder".into()).spawn(move || {
             let (mut stages, mut failed) = (Vec::new(), Vec::new());
             for item in missing {
-                match build_stage(item.section.clone(), reference.clone(), sample_rate) {
+                match build_stage(item.section.clone(), sample_rate) {
                     Ok(stage) => stages.push((item.id, stage)),
                     Err(err) => {
                         item.section.set_status(format!("{err:#}"));
@@ -460,7 +451,7 @@ mod tests {
         let settings = Settings::new(default_sections());
         let items = settings.items();
         settings.move_item(0, items.len());
-        let chain = build_chain(&settings, None, 48_000).unwrap();
+        let chain = build_chain(&settings, 48_000).unwrap();
         let expected: Vec<u64> = items[1..].iter().chain(&items[..1]).map(|i| i.id).collect();
         assert_eq!(ids(&chain), expected);
     }
@@ -470,9 +461,9 @@ mod tests {
         assert_eq!(kinds().count(), default_sections().len());
         assert!(kinds().all(|k| new_section(k).is_some_and(|s| s.name == k)));
         assert!(new_section("Mystery").is_none());
-        assert!(build_chain(&Settings::new(default_sections()), None, 48_000).is_ok());
+        assert!(build_chain(&Settings::new(default_sections()), 48_000).is_ok());
         let odd = Settings::new(vec![crate::settings::Section::new("Mystery", vec![])]);
-        let message = build_chain(&odd, None, 48_000).err().expect("unknown section").to_string();
+        let message = build_chain(&odd, 48_000).err().expect("unknown section").to_string();
         assert!(message.contains("Mystery"), "{message}");
     }
 
@@ -550,7 +541,7 @@ mod tests {
     #[test]
     fn a_running_chain_follows_stages_being_added_moved_and_removed() {
         let settings = Settings::new(vec![gain::section()]);
-        let mut live = LiveChain::new(settings.clone(), None, 48_000).unwrap();
+        let mut live = LiveChain::new(settings.clone(), 48_000).unwrap();
         let first = stage_addresses(&live);
 
         let added = settings.add(gain::section());
@@ -576,7 +567,7 @@ mod tests {
     fn a_slow_stage_is_built_without_holding_up_the_audio() {
         let settings = Settings::new(vec![gain::section()]);
         settings.items()[0].section.params[0].set(6.0);
-        let mut live = LiveChain::new(settings.clone(), None, 48_000).unwrap();
+        let mut live = LiveChain::new(settings.clone(), 48_000).unwrap();
         settings.add(dpdfnet::section(dpdfnet::LIGHT));
 
         let started = Instant::now();
@@ -590,7 +581,7 @@ mod tests {
     #[test]
     fn a_stage_that_will_not_build_is_reported_and_not_retried() {
         let settings = Settings::new(vec![gain::section()]);
-        let mut live = LiveChain::new(settings.clone(), None, 48_000).unwrap();
+        let mut live = LiveChain::new(settings.clone(), 48_000).unwrap();
         let odd = settings.add(crate::settings::Section::new("Mystery", vec![]));
         run_until(&mut live, |live, _| live.building.is_none() && live.seen == settings.generation());
         assert!(odd.section.status().contains("Mystery"));
@@ -601,7 +592,7 @@ mod tests {
     #[test]
     fn full_chain_builds_and_passes_a_voice_band_tone() {
         let settings = Settings::new(default_sections());
-        let mut chain = build_chain(&settings, None, 48_000).expect("chain builds");
+        let mut chain = build_chain(&settings, 48_000).expect("chain builds");
         let mut tone = testutil::sine(500.0, 48_000, 0.05);
         chain.process(&mut tone);
         assert!(tone.iter().all(|s| s.is_finite()));
@@ -610,7 +601,7 @@ mod tests {
     #[test]
     fn full_chain_cost_is_a_small_fraction_of_real_time() {
         let settings = Settings::new(default_sections());
-        let mut chain = build_chain(&settings, None, 48_000).expect("chain builds");
+        let mut chain = build_chain(&settings, 48_000).expect("chain builds");
         let mut audio = testutil::sine(300.0, 48_000 * 5, 0.2);
         let started = std::time::Instant::now();
         for frame in audio.chunks_exact_mut(480) {

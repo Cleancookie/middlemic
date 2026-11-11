@@ -821,7 +821,6 @@ mod tests {
             names,
             [
                 "Feedback suppressor",
-                "Echo cancellation",
                 "Noise removal (DPDFNet)",
                 "Mic boost",
                 "EQ",
