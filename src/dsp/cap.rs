@@ -8,7 +8,7 @@ pub struct ReductionCap {
     keep: f32,
 }
 
-/// At or above this the cap is off, as in DeepFilterNet's own control.
+/// At or above this the cap is off.
 const UNLIMITED_DB: f32 = 100.0;
 
 impl ReductionCap {

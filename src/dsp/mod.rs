@@ -5,7 +5,6 @@ mod biquad;
 mod cap;
 mod compressor;
 mod dpdfnet;
-mod deepfilter;
 mod deesser;
 mod echo;
 mod eq;
@@ -13,9 +12,7 @@ pub mod feedback;
 mod gain;
 mod limiter;
 pub mod multiband;
-mod rnnoise;
 
-pub use deepfilter::DeepFilter;
 #[allow(unused_imports)] // The download button is in the Windows-only window.
 pub use dpdfnet::{DpdfNet, LIGHT as DPDFNET, download_dir as model_download_dir, model_installed};
 pub use echo::{EchoCancel, Reference};
@@ -26,7 +23,6 @@ pub use feedback::FeedbackSuppressor;
 pub use gain::Gain;
 pub use limiter::Limiter;
 pub use multiband::Multiband;
-pub use rnnoise::RnNoise;
 
 use crate::settings::{Item, Section, Settings};
 use anyhow::Result;
@@ -35,12 +31,10 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 /// Every kind of stage with a maker for its controls, in the default rack's order.
-const KINDS: [(&str, fn() -> Section); 10] = [
+const KINDS: [(&str, fn() -> Section); 8] = [
     (feedback::NAME, feedback::section),
     (echo::NAME, echo::section),
     (dpdfnet::LIGHT.name, || dpdfnet::section(dpdfnet::LIGHT)),
-    (deepfilter::NAME, deepfilter::section),
-    (rnnoise::NAME, rnnoise::section),
     (gain::NAME, gain::section),
     (eq::NAME, eq::section),
     (deesser::NAME, deesser::section),
@@ -79,8 +73,6 @@ fn build_stage(section: Arc<Section>, reference: Option<Reference>, sample_rate:
         feedback::NAME => Box::new(FeedbackSuppressor::new(section)),
         echo::NAME => Box::new(EchoCancel::new(section, reference)),
         name if name == dpdfnet::LIGHT.name => Box::new(DpdfNet::new(section, dpdfnet::LIGHT)),
-        rnnoise::NAME => Box::new(RnNoise::new(section)),
-        deepfilter::NAME => Box::new(DeepFilter::new(section)?),
         gain::NAME => Box::new(Gain::new(section)),
         eq::NAME => Box::new(Eq::new(section)),
         deesser::NAME => Box::new(DeEsser::new(section)),
@@ -563,7 +555,7 @@ mod tests {
         let settings = Settings::new(vec![gain::section()]);
         settings.items()[0].section.params[0].set(6.0);
         let mut live = LiveChain::new(settings.clone(), None, 48_000).unwrap();
-        settings.add(deepfilter::section());
+        settings.add(dpdfnet::section(dpdfnet::LIGHT));
 
         let started = Instant::now();
         let mut block = vec![0.1_f32; 480];

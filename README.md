@@ -46,16 +46,14 @@ plus a scrolling spectrogram with the de-esser's frequency marked. Click its hea
 | --- | --- |
 | **Feedback suppressor** | Spots speaker-to-mic howls by FFT and cuts each with a narrow notch that fades once the howl is gone. A strip shows each notch's pitch and depth. |
 | **Echo cancellation** | WebRTC AEC3, pure Rust. Removes what your speakers play from your mic. It listens to the default playback device through WASAPI loopback, so set Windows playback to your speakers or headphones, not the cable. If the cable is the default, the stage idles rather than erase your own voice. Off by default. |
-| **DPDFNet** | The default noise removal: removes fans, hum, keyboard and room noise and keeps speech clear. Needs a one-time model download (see below). Adds about 50 ms and uses roughly 40% of a core. |
-| **DeepFilterNet** | The previous noise removal, kept to compare. Cheaper than DPDFNet, adds 30 ms, and removes more speech at the same cap. Off by default. |
-| **RNNoise** | A very cheap noise remover (about 1% of a core, 10 ms). Off by default. |
+| **DPDFNet** | The noise removal: removes fans, hum, keyboard and room noise and keeps speech clear. Needs a one-time model download (see below). Adds about 50 ms and uses roughly 40% of a core. |
 | **Mic boost** | Plain gain. |
 | **EQ** | A plugin-style EQ: response curve with draggable band dots and a row of knobs per band. |
 | **De-esser** | Tames harsh "s" sounds, with a gain-reduction meter. |
 | **Compressor** | A Maximus-style multiband compressor. Simple mode is one Amount slider plus Gentle, Voice and Strong; Advanced mode shows every dial. |
 | **Limiter** | A last stage that stops peaks clipping. |
 
-The three noise removers have a **Max reduction** knob: the most noise each may remove, in dB.
+DPDFNet has a **Max reduction** knob: the most noise it may remove, in dB.
 At 18 dB speech stays natural; raise it for a noisier room.
 
 **DPDFNet model.** The row shows a **Download model** button until the file is installed. It
@@ -80,7 +78,7 @@ loading. Device choices are not part of a preset.
 Built in:
 
 - **Default**: one of each stage, DPDFNet on.
-- **Alex's preset**: echo cancellation, mic boost, DPDFNet, EQ and the compressor on; DeepFilterNet, RNNoise, the de-esser and the limiter off.
+- **Alex's preset**: echo cancellation, mic boost, DPDFNet, EQ and the compressor on; the de-esser and the limiter off.
 
 ## Settings
 
@@ -113,11 +111,6 @@ Or with make: `make build`, `make test`, and `make open`, which builds if anythi
 then starts the window on Windows (WSL only). Each `make open` starts another copy, so close the
 old window first.
 
-Two dependencies are pinned on purpose. `tract-*` is `=0.21.4` because 0.21.19 breaks
-`deep_filter`, and `deep_filter` is a git dependency at a fixed revision of
-[Rikorose/DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) (MIT OR Apache-2.0),
-because the crates.io release has no inference code.
-
 ## Test
 
 ```sh
@@ -145,7 +138,6 @@ through the rack in 10 ms frames, as the live engine does. Run them by name:
 ```sh
 export MIDDLEMIC_TEST_AUDIO=/path/to/recording.m4a MIDDLEMIC_TEST_OUT=/path/to/output-dir
 export MIDDLEMIC_MODELS=/path/to/dir-with-the-onnx-model     # for DPDFNet
-cargo test --release compare_denoisers  -- --ignored --nocapture   # the three denoisers side by side
 cargo test --release feedback_on_recording -- --ignored --nocapture   # does the feedback suppressor misfire?
 cargo test --release analyse_chain -- --ignored --nocapture   # per-frame timing, gating
 cargo test --release analyse_cap   -- --ignored --nocapture   # noise removal strength sweep
@@ -155,19 +147,6 @@ cargo test --release measure_delay -- --ignored --nocapture   # real delay of ea
 Processed `.wav` files are written to `MIDDLEMIC_TEST_OUT` so you can listen to the result.
 When the output is lined up against the input, allow for the noise removal's delay, or every
 word edge looks cut.
-
-`compare_denoisers` prints, per remover and cap, the delay, how much quieter the pauses get
-(more is better), how much quieter speech gets (less is better) and how many words dip by over
-6 dB. On two test recordings at an 18 dB cap, speech loss in dB was:
-
-| Recording | DeepFilterNet | DPDFNet | RNNoise |
-| --- | --- | --- | --- |
-| Quiet room | 2.1 | 0.5 | 0.45 |
-| Background noise | 4.56 | 3.36 | 2.99 |
-
-On the noisy one the pauses get quieter by 14.5, 15.1 and 13.6 dB. DPDFNet cleans pauses most
-and loses less speech than DeepFilterNet in both; RNNoise loses the least speech but is cheapest
-and cleans pauses a little less.
 
 ## Licence
 

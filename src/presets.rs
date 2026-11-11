@@ -253,18 +253,18 @@ mod tests {
     }
 
     #[test]
-    fn alexs_preset_has_nine_stages_with_alexs_values() {
+    fn alexs_preset_has_seven_stages_with_alexs_values() {
         let settings = fresh();
         let mut presets = Presets::new(PathBuf::from("nowhere"), "");
         presets.load(&settings, ALEX_NAME).unwrap();
-        assert_eq!(settings.items().len(), 9);
+        assert_eq!(settings.items().len(), 7);
         assert!((param(&settings, "EQ", "High shelf gain") - 3.45).abs() < 1e-3);
         assert_eq!(param(&settings, "Noise removal (DPDFNet)", "Max reduction"), 67.0);
         assert_eq!(param(&settings, "Compressor", "Amount"), 25.0);
         assert!((param(&settings, "Compressor", "Low ratio") - 3.4).abs() < 1e-4);
         assert_eq!(param(&settings, "Compressor", "Master ratio"), 1.0);
         let order: Vec<_> = settings.items().iter().map(|i| i.kind()).collect();
-        assert_eq!(order[..3], ["Echo cancellation", "Mic boost", "Noise removal"]);
+        assert_eq!(order[..3], ["Echo cancellation", "Mic boost", "Noise removal (DPDFNet)"]);
         assert!(!settings.section("Limiter").is_enabled());
         assert!(settings.section("Limiter").open.load(Relaxed));
     }
@@ -307,7 +307,7 @@ mod tests {
         let mut later = Presets::new(dir.0.clone(), "Stream: loud?");
         assert_eq!(later.current(), "Stream: loud?", "remembered across launches");
         later.load(&b, "Stream: loud?").unwrap();
-        assert_eq!(b.items().len(), 9);
+        assert_eq!(b.items().len(), 7);
         assert_eq!(param(&b, "Compressor", "Amount"), 41.0);
         assert_eq!(fingerprint(&a.items()), fingerprint(&b.items()));
     }
@@ -344,7 +344,7 @@ mod tests {
         other.add(crate::dsp::new_section("Feedback suppressor").unwrap());
         other.section("Feedback suppressor").open.store(settings.section("Feedback suppressor").open.load(Relaxed), Relaxed);
         assert!(presets.modified(&other), "the stage moved to the end");
-        other.move_item(9, 0);
+        other.move_item(7, 0);
         assert_ne!(other.items()[0].id, settings.items()[0].id);
         assert!(!presets.modified(&other), "same rack, other ids");
     }

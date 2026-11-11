@@ -981,8 +981,8 @@ Low crossover=300
         assert!(!extras.contains_key("order"));
         let kinds: Vec<_> = s.items().iter().map(|i| i.kind()).collect();
         assert_eq!(kinds[0], "Feedback suppressor", "a stage the file never knew keeps its place");
-        assert_eq!(kinds[5..8], ["Mic boost", "De-esser", "EQ"], "saved order kept");
-        assert_eq!(names(&s).len(), 10);
+        assert_eq!(kinds[3..6], ["Mic boost", "De-esser", "EQ"], "saved order kept");
+        assert_eq!(names(&s).len(), 8);
 
         assert!(s.section("Echo cancellation").is_enabled());
         let eq = s.section("EQ");

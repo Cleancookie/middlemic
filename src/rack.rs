@@ -823,8 +823,6 @@ mod tests {
                 "Feedback suppressor",
                 "Echo cancellation",
                 "Noise removal (DPDFNet)",
-                "Noise removal",
-                "Noise removal (RNNoise)",
                 "Mic boost",
                 "EQ",
                 "De-esser",

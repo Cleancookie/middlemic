@@ -15,19 +15,10 @@ clap = { version = "4.6.7", features = ["derive"] }
 ringbuf = "0.6.0"
 # Echo cancellation (WebRTC AEC3), pure Rust.
 sonora = "0.3.0"
-# RNNoise in Rust: a cheap noise-removal stage to compare against the neural ones.
-nnnoiseless = { version = "0.5.2", default-features = false }
-ndarray = "0.15"
 realfft = "3.5.1"
 # Also a plain dependency (eframe is Windows-only) so the drawing code can be tested headless.
 egui = { version = "0.37.0", default-features = false, features = ["default_fonts"] }
-# deep_filter only says ^0.21.4, but tract 0.21.19 breaks its API (symbol_table). Keep exact.
-tract-core = "=0.21.4"
-tract-onnx = "=0.21.4"
-tract-pulse = "=0.21.4"
-tract-hir = "=0.21.4"
-# Not on crates.io: the published 0.2.5 has no inference code.
-deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", rev = "7b14b895fe7fc42cab72b4a4c1e49c982bd6404b", default-features = false, features = ["tract", "default-model"] }
+tract-onnx = "0.21.19"
 
 [target.'cfg(windows)'.dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }

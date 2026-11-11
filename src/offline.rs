@@ -197,19 +197,19 @@ mod tests {
             (
                 "noise removal only, full strength",
                 Box::new(|s| {
-                    only(s, &["Noise removal"]);
-                    s.section("Noise removal").params[0].set(100.0);
+                    only(s, &["Noise removal (DPDFNet)"]);
+                    s.section("Noise removal (DPDFNet)").params[0].set(100.0);
                 }),
             ),
             (
                 "noise removal only, capped at 30 dB",
                 Box::new(|s| {
-                    only(s, &["Noise removal"]);
-                    s.section("Noise removal").params[0].set(30.0);
+                    only(s, &["Noise removal (DPDFNet)"]);
+                    s.section("Noise removal (DPDFNet)").params[0].set(30.0);
                 }),
             ),
             ("everything except noise removal", Box::new(|s| {
-                let all: Vec<&str> = crate::dsp::kinds().filter(|n| *n != "Noise removal").collect();
+                let all: Vec<&str> = crate::dsp::kinds().filter(|n| *n != "Noise removal (DPDFNet)").collect();
                 only(s, &all);
             })),
             ("full default chain", Box::new(|_| {})),
@@ -270,7 +270,7 @@ mod tests {
     fn measure_delay() {
         let clip = decode(Path::new(&std::env::var("MIDDLEMIC_TEST_AUDIO").unwrap()));
         let input = to_48k(&clip);
-        for (name, keep) in [("noise removal only", vec!["Noise removal"]), ("everything else", vec!["Mic boost", "EQ", "De-esser", "Compressor", "Limiter"])] {
+        for (name, keep) in [("noise removal only", vec!["Noise removal (DPDFNet)"]), ("everything else", vec!["Mic boost", "EQ", "De-esser", "Compressor", "Limiter"])] {
             let settings = crate::settings::Settings::new(crate::dsp::default_sections());
             only(&settings, &keep);
             let (output, _) = run(&input, &settings);
@@ -294,8 +294,8 @@ mod tests {
         let mut columns = Vec::new();
         for cap in [100.0f32, 18.0] {
             let settings = crate::settings::Settings::new(crate::dsp::default_sections());
-            only(&settings, &["Noise removal"]);
-            settings.section("Noise removal").params[0].set(cap);
+            only(&settings, &["Noise removal (DPDFNet)"]);
+            settings.section("Noise removal (DPDFNet)").params[0].set(cap);
             let (output, _) = run(&input, &settings);
             let lag = measure_lag(&input, &output);
             let n = output.len() - lag;
@@ -320,54 +320,6 @@ mod tests {
         }
     }
 
-    /// Every noise-removal stage on the same recording, lined up with the input.
-    /// `MIDDLEMIC_MODELS=<dir with the .onnx files> MIDDLEMIC_TEST_AUDIO=<file> [MIDDLEMIC_TEST_OUT=<dir>] cargo test --release compare_denoisers -- --ignored --nocapture`
-    #[test]
-    #[ignore]
-    fn compare_denoisers() {
-        let clip = decode(Path::new(&std::env::var("MIDDLEMIC_TEST_AUDIO").unwrap()));
-        let input = to_48k(&clip);
-        let out_dir = std::env::var("MIDDLEMIC_TEST_OUT").ok();
-        let stages = [
-            "Noise removal",
-            "Noise removal (DPDFNet)",
-            "Noise removal (RNNoise)",
-        ];
-        println!(
-            "{:<34} {:>4} {:>8} {:>10} {:>9} {:>10} {:>7}",
-            "stage", "cap", "lag ms", "pause dB", "speech dB", "dips>6dB", "RTF"
-        );
-        for stage in stages {
-            for cap in [100.0f32, 18.0] {
-                let settings = crate::settings::Settings::new(crate::dsp::default_sections());
-                only(&settings, &[stage]);
-                settings.section(stage).params[0].set(cap);
-                let started = std::time::Instant::now();
-                let (output, _) = run(&input, &settings);
-                let rtf = started.elapsed().as_secs_f32() / (input.len() as f32 / 48_000.0);
-                let lag = measure_lag(&input, &output);
-                let n = output.len() - lag;
-                let a = frame_levels_db(&input[..n]);
-                let b = frame_levels_db(&output[lag..lag + n]);
-                let mean = |sel: &dyn Fn(f32) -> bool| {
-                    let d: Vec<f32> = (0..a.len()).filter(|&k| sel(a[k])).map(|k| a[k] - b[k]).collect();
-                    (d.iter().sum::<f32>() / d.len().max(1) as f32, d)
-                };
-                let (pause, _) = mean(&|x| x < -42.0);
-                let (speech, d) = mean(&|x| x > -35.0);
-                let dips = d.iter().filter(|x| **x > 6.0).count();
-                println!(
-                    "{stage:<34} {cap:>4.0} {:>8.1} {pause:>10.1} {speech:>9.2} {dips:>10} {rtf:>7.3}",
-                    lag as f32 / 48.0
-                );
-                if let Some(dir) = &out_dir {
-                    let name: String = stage.chars().filter(|c| c.is_alphanumeric()).collect();
-                    write_wav(Path::new(&format!("{dir}/{name}_cap{cap:.0}.wav")), &output[lag..], 48_000);
-                }
-            }
-        }
-    }
-
     /// How much noise removal can we allow before it eats speech?
     /// `MIDDLEMIC_TEST_AUDIO=<file> MIDDLEMIC_TEST_OUT=<dir> cargo test --release analyse_cap -- --ignored --nocapture`
     #[test]
@@ -383,8 +335,8 @@ mod tests {
         println!("(output lined up with the input; max reduction | speech frames cut >10 dB | worst 10 ms of speech | avg speech change | avg background change)");
         for cap in [100.0f32, 40.0, 25.0, 18.0, 12.0, 8.0] {
             let settings = crate::settings::Settings::new(crate::dsp::default_sections());
-            only(&settings, &["Noise removal"]);
-            settings.section("Noise removal").params[0].set(cap);
+            only(&settings, &["Noise removal (DPDFNet)"]);
+            settings.section("Noise removal (DPDFNet)").params[0].set(cap);
             let (output, _) = run(&input, &settings);
             let lag = measure_lag(&input, &output);
             let n = output.len() - lag;
@@ -425,7 +377,7 @@ mod tests {
         let clip = decode(Path::new(&std::env::var("MIDDLEMIC_TEST_AUDIO").unwrap()));
         let input = to_48k(&clip);
         let settings = crate::settings::Settings::new(crate::dsp::default_sections());
-        only(&settings, &["Noise removal"]);
+        only(&settings, &["Noise removal (DPDFNet)"]);
         let (output, _) = run(&input, &settings);
         let (i, o) = (frame_levels_db(&input), frame_levels_db(&output));
         let mut sorted = i.clone();
@@ -474,7 +426,7 @@ mod tests {
             let gain = 10f32.powf(boost_db / 20.0);
             let boosted: Vec<f32> = input.iter().map(|s| (s * gain).clamp(-1.0, 1.0)).collect();
             let settings = crate::settings::Settings::new(crate::dsp::default_sections());
-            only(&settings, &["Noise removal"]);
+            only(&settings, &["Noise removal (DPDFNet)"]);
             let (output, _) = run(&boosted, &settings);
             let (frames, runs, speech, speech_change) = dropouts(&boosted[..output.len()], &output);
 
