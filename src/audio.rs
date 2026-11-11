@@ -328,6 +328,18 @@ impl Drop for MicMonitor {
     }
 }
 
+/// Denormal floats make filters and decays slow on x86; flush them to zero on this thread.
+fn flush_denormals() {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: reads and writes only this thread's MXCSR, setting FTZ (bit 15) and DAZ (bit 6).
+    unsafe {
+        let mut csr = 0u32;
+        core::arch::asm!("stmxcsr [{}]", in(reg) &mut csr, options(nostack));
+        csr |= 0x8040;
+        core::arch::asm!("ldmxcsr [{}]", in(reg) &csr, options(nostack, readonly));
+    }
+}
+
 fn dsp_loop(
     mut input: impl Consumer<Item = f32>,
     reference: HeapCons<f32>,
@@ -335,6 +347,7 @@ fn dsp_loop(
     settings: Arc<Settings>,
     running: Arc<AtomicBool>,
 ) -> Result<()> {
+    flush_denormals();
     let reference = Arc::new(Mutex::new(reference));
     let mut chain = dsp::LiveChain::new(settings.clone(), Some(reference), SAMPLE_RATE as u32)?;
     let meters = &settings.meters;
