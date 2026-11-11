@@ -334,7 +334,6 @@ fn dsp_loop(
     settings: Arc<Settings>,
     running: Arc<AtomicBool>,
 ) -> Result<()> {
-    lower_priority();
     let reference = Arc::new(Mutex::new(reference));
     let mut chain = dsp::LiveChain::new(settings.clone(), Some(reference), SAMPLE_RATE as u32)?;
     let meters = &settings.meters;
