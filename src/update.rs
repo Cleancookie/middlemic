@@ -276,12 +276,24 @@ impl Updater {
         let staged = self.ready().ok_or("no update has been downloaded")?;
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         swap_in(&exe, &staged).map_err(|e| format!("could not replace {}: {e}", exe.display()))?;
-        std::process::Command::new(&exe)
-            .args(std::env::args_os().skip(1))
-            .spawn()
-            .map_err(|e| format!("updated, but could not restart: {e}. Start middlemic again."))?;
-        Ok(())
+        restart(&exe).map_err(|e| format!("updated, but could not restart: {e}. Start middlemic again."))
     }
+}
+
+/// Starts `exe` again with this run's arguments. The console was freed at startup, so the standard
+/// handles are invalid; handing those to the child fails with "request is not supported" (os error 50).
+fn restart(exe: &Path) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    let mut command = Command::new(exe);
+    command.args(std::env::args_os().skip(1)).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    command.spawn().map(|_| ())
 }
 
 #[cfg(test)]
