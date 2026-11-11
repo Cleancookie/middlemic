@@ -2,6 +2,7 @@
 //! Fixed 48 kHz, mono in, stereo out, shared mode. Windows resamples via `autoconvert`.
 
 use crate::dsp;
+use crate::pcm;
 use crate::latency::{BLOCK_MS, CUSHION_MS};
 use crate::playout::{Fill, Playout};
 use crate::settings::Settings;
@@ -10,7 +11,6 @@ use ringbuf::{
     HeapCons, HeapRb,
     traits::{Consumer, Producer, Split},
 };
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -253,19 +253,18 @@ pub(crate) fn pump_capture(
     let capture = client.get_audiocaptureclient()?;
     client.start_stream()?;
 
-    let mut bytes: VecDeque<u8> = VecDeque::with_capacity(FRAME * 16);
+    let mut bytes: Vec<u8> = vec![0; FRAME * 16];
     let mut samples: Vec<f32> = Vec::with_capacity(FRAME * 4);
     while running.load(Ordering::Relaxed) {
-        capture.read_from_device_to_deque(&mut bytes)?;
         samples.clear();
-        while bytes.len() >= 4 {
-            let b = [
-                bytes.pop_front().unwrap(),
-                bytes.pop_front().unwrap(),
-                bytes.pop_front().unwrap(),
-                bytes.pop_front().unwrap(),
-            ];
-            samples.push(f32::from_le_bytes(b));
+        // Drain every packet that is waiting, reading each straight into one reused buffer.
+        while let Some(frames) = capture.get_next_packet_size()?.filter(|&f| f > 0) {
+            let needed = frames as usize * 4;
+            if bytes.len() < needed {
+                bytes.resize(needed, 0);
+            }
+            let (read, _) = capture.read_from_device(&mut bytes[..needed])?;
+            pcm::append_samples(&bytes[..read as usize * 4], &mut samples);
         }
         sink(&samples);
         if loopback {
@@ -408,8 +407,7 @@ pub(crate) fn render_loop(
         if playout.fill(&mut ring, &mut samples) == Fill::RanDry {
             settings.meters.record_dropout();
         }
-        bytes.clear();
-        bytes.extend(samples.iter().flat_map(|s| s.to_le_bytes()));
+        pcm::write_bytes(&samples, &mut bytes);
         render.write_to_device(&bytes, None)?;
         Ok(())
     };

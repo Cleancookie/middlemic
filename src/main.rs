@@ -16,6 +16,7 @@ mod live_spectrum;
 mod motion;
 #[cfg(test)]
 mod offline;
+mod pcm;
 mod playout;
 mod presets;
 mod profile;
