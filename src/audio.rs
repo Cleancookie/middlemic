@@ -144,16 +144,8 @@ impl Engine {
         spawn("capture", Box::new(move || capture_loop(input, cap_prod, s, r)))?;
         let (r, s) = (running.clone(), settings.clone());
         spawn("dsp", Box::new(move || dsp_loop(cap_cons, ref_cons, out_prod, s, r)))?;
-        let (r, sink) = (running.clone(), output.clone());
-        spawn(
-            "reference",
-            Box::new(move || {
-                if let Err(err) = reference_loop(sink, ref_prod, r) {
-                    eprintln!("echo reference unavailable: {err:#}");
-                }
-                Ok(())
-            }),
-        )?;
+        let (r, sink, s) = (running.clone(), output.clone(), settings.clone());
+        spawn("reference", Box::new(move || Ok(reference_loop(sink, ref_prod, s, r))))?;
         let r = running.clone();
         spawn(
             "render",
@@ -174,6 +166,7 @@ impl Engine {
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
         for handle in self.handles.drain(..) {
+            handle.thread().unpark(); // the reference thread sleeps between checks
             let _ = handle.join();
         }
     }
@@ -200,26 +193,57 @@ fn capture_loop(
     pump_capture(&device, &running, ring_sink(&mut ring, || settings.meters.record_dropout()), false)
 }
 
-/// What the speakers play, as the echo canceller's reference. Opening a playback device for
-/// capture is WASAPI loopback. Best effort: if it cannot run, the echo stage simply stays
-/// idle and the mic carries on, so this never stops the engine.
+/// Whether an enabled echo cancellation stage is in the rack.
+fn echo_wanted(settings: &Settings) -> bool {
+    settings.items().iter().any(|i| i.kind() == dsp::ECHO_NAME && i.section.is_enabled())
+}
+
+/// Runs the loopback only while echo cancellation is in the rack and on, so otherwise it costs
+/// no WASAPI client and no thread wakeups. Best effort: a failed session is reported and not
+/// retried until the stage is switched off and on again.
 fn reference_loop(
     output: String,
     mut ring: impl Producer<Item = f32>,
+    settings: Arc<Settings>,
     running: Arc<AtomicBool>,
+) {
+    let alive = || running.load(Ordering::Relaxed);
+    let mut tried = false;
+    while alive() {
+        let wanted = echo_wanted(&settings);
+        if wanted && !tried {
+            tried = true;
+            if let Err(err) = reference_session(&output, &mut ring, &settings, &running) {
+                eprintln!("echo reference unavailable: {err:#}");
+            }
+        } else {
+            tried &= wanted;
+            thread::park_timeout(Duration::from_millis(500));
+        }
+    }
+}
+
+/// What the speakers play, as the echo canceller's reference. Opening a playback device for
+/// capture is WASAPI loopback. Returns when the engine stops or echo cancellation is switched
+/// off. If it cannot run, the echo stage simply stays idle and the mic carries on.
+fn reference_session(
+    output: &str,
+    ring: &mut impl Producer<Item = f32>,
+    settings: &Settings,
+    running: &AtomicBool,
 ) -> Result<()> {
     initialize_mta().ok()?;
     let enumerator = DeviceEnumerator::new()?;
     let device = enumerator.get_default_device(Direction::Render)?;
     let name = device.get_friendlyname()?;
     // Our own output must not be the reference: the canceller would erase the voice we send.
-    let sink = find_device(&enumerator, Direction::Render, Some(&output))?.get_friendlyname()?;
+    let sink = find_device(&enumerator, Direction::Render, Some(output))?.get_friendlyname()?;
     if name == sink {
         eprintln!("echo reference: the default playback device ({name}) is the output; echo cancellation is idle. Set Windows playback to your headphones or speakers.");
         return Ok(());
     }
     eprintln!("echo reference: {name}");
-    pump_capture(&device, &running, ring_sink(&mut ring, || {}), true)
+    pump_capture_while(&device, || running.load(Ordering::Relaxed) && echo_wanted(settings), ring_sink(ring, || {}), true)
 }
 
 /// A sink that pushes into `ring` and calls `on_overflow` when the reader fell behind.
@@ -236,6 +260,16 @@ fn ring_sink<'a>(ring: &'a mut impl Producer<Item = f32>, mut on_overflow: impl 
 pub(crate) fn pump_capture(
     device: &wasapi::Device,
     running: &AtomicBool,
+    sink: impl FnMut(&[f32]),
+    loopback: bool,
+) -> Result<()> {
+    pump_capture_while(device, || running.load(Ordering::Relaxed), sink, loopback)
+}
+
+/// [`pump_capture`] until `keep_going` returns false, checked at every wake-up.
+fn pump_capture_while(
+    device: &wasapi::Device,
+    keep_going: impl Fn() -> bool,
     mut sink: impl FnMut(&[f32]),
     loopback: bool,
 ) -> Result<()> {
@@ -257,7 +291,7 @@ pub(crate) fn pump_capture(
 
     let mut bytes: Vec<u8> = vec![0; FRAME * 16];
     let mut samples: Vec<f32> = Vec::with_capacity(FRAME * 4);
-    while running.load(Ordering::Relaxed) {
+    while keep_going() {
         samples.clear();
         // Drain every packet that is waiting, reading each straight into one reused buffer.
         while let Some(frames) = capture.get_next_packet_size()?.filter(|&f| f > 0) {

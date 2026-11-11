@@ -15,6 +15,8 @@ pub mod multiband;
 
 #[allow(unused_imports)] // The download button is in the Windows-only window.
 pub use dpdfnet::{DpdfNet, LIGHT as DPDFNET, download_dir as model_download_dir, missing_downloads, model_installed};
+#[cfg_attr(not(windows), allow(unused_imports))]
+pub use echo::NAME as ECHO_NAME;
 pub use echo::{EchoCancel, Reference};
 pub use deesser::DeEsser;
 #[allow(unused_imports)] // EQ_NAME is used by the Windows-only window.
