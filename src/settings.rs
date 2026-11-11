@@ -1056,7 +1056,8 @@ Low crossover=300
         let saved = s.to_text(&[]);
         let t = Settings::new(crate::dsp::default_sections());
         t.apply_text(&saved);
-        assert_eq!(names(&t), names(&s), "and saves back in the new format");
+        let migrated: Vec<_> = names(&s).iter().map(|n| n.replace("Compressor", "Compressor (Advanced)")).collect();
+        assert_eq!(names(&t), migrated, "and saves back in the new format, its advanced compressor now the advanced stage");
         assert!(saved.contains("[stage "), "{saved}");
     }
 
