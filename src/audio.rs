@@ -101,6 +101,18 @@ pub(crate) fn lower_priority() {
     }
 }
 
+/// Registers the calling thread with the Windows multimedia scheduler as "Pro Audio", so a game
+/// cannot starve it. Best effort: the thread just keeps its normal scheduling if this fails.
+fn join_pro_audio() {
+    use windows_sys::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
+    let task: Vec<u16> = "Pro Audio\0".encode_utf16().collect();
+    let mut index = 0u32;
+    // SAFETY: `task` is NUL-terminated and outlives the call; `index` is a valid out pointer.
+    unsafe {
+        AvSetMmThreadCharacteristicsW(task.as_ptr(), &mut index);
+    }
+}
+
 /// Capture, DSP and render threads. Stops when dropped or when any thread fails.
 pub struct Engine {
     running: Arc<AtomicBool>,
@@ -127,6 +139,9 @@ impl Engine {
             let error = error.clone();
             let name = name.to_string();
             let handle = thread::Builder::new().name(name.clone()).spawn(move || {
+                if name != "reference" {
+                    join_pro_audio();
+                }
                 if let Err(err) = f() {
                     error
                         .lock()

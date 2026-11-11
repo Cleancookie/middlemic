@@ -44,6 +44,8 @@ const LABEL_WIDTH: f32 = 40.0;
 const PRESET_WIDTH: f32 = 130.0;
 
 pub fn run(settings: Arc<Settings>, minimized: bool) -> eframe::Result {
+    // The audio threads come first; drawing must not compete with a game for a core.
+    crate::audio::lower_priority();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("middlemic")
