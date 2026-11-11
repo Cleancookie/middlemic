@@ -198,7 +198,7 @@ fn feed(
     let mut frames = 0u32;
     while running.load(Ordering::Relaxed) {
         if out.vacant_len() < FRAME * 2 {
-            thread::sleep(Duration::from_millis(2));
+            thread::sleep(Duration::from_millis(5));
             continue;
         }
         let at = position.load(Ordering::Relaxed);

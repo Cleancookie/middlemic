@@ -134,7 +134,7 @@ impl Engine {
             error: error.clone(),
             handles: Vec::new(),
         };
-        let mut spawn = |name: &str, f: Box<dyn FnOnce() -> Result<()> + Send>| -> Result<()> {
+        let mut spawn = |name: &str, f: Box<dyn FnOnce() -> Result<()> + Send>| -> Result<thread::Thread> {
             let running = running.clone();
             let error = error.clone();
             let name = name.to_string();
@@ -150,15 +150,17 @@ impl Engine {
                     running.store(false, Ordering::Relaxed);
                 }
             })?;
+            let thread = handle.thread().clone();
             engine.handles.push(handle);
-            Ok(())
+            Ok(thread)
         };
 
         settings.meters.clear_dropouts();
         let (r, s) = (running.clone(), settings.clone());
-        spawn("capture", Box::new(move || capture_loop(input, cap_prod, s, r)))?;
+        // The capture thread wakes the DSP thread whenever it delivers audio.
+        let dsp_thread = spawn("dsp", Box::new(move || dsp_loop(cap_cons, ref_cons, out_prod, s, r)))?;
         let (r, s) = (running.clone(), settings.clone());
-        spawn("dsp", Box::new(move || dsp_loop(cap_cons, ref_cons, out_prod, s, r)))?;
+        spawn("capture", Box::new(move || capture_loop(input, cap_prod, s, r, dsp_thread)))?;
         let (r, sink, s) = (running.clone(), output.clone(), settings.clone());
         spawn("reference", Box::new(move || Ok(reference_loop(sink, ref_prod, s, r))))?;
         let r = running.clone();
@@ -198,6 +200,7 @@ fn capture_loop(
     mut ring: impl Producer<Item = f32>,
     settings: Arc<Settings>,
     running: Arc<AtomicBool>,
+    dsp: thread::Thread,
 ) -> Result<()> {
     initialize_mta().ok()?;
     let enumerator = DeviceEnumerator::new()?;
@@ -205,7 +208,11 @@ fn capture_loop(
     eprintln!("input:  {}", device.get_friendlyname()?);
     let (period, _) = device.get_iaudioclient()?.get_device_period()?;
     settings.meters.set_capture_buffer_ms(period as f32 / HNS_PER_MS);
-    pump_capture(&device, &running, ring_sink(&mut ring, || settings.meters.record_dropout()), false)
+    let mut push = ring_sink(&mut ring, || settings.meters.record_dropout());
+    pump_capture(&device, &running, |samples| {
+        push(samples);
+        dsp.unpark();
+    }, false)
 }
 
 /// Whether an enabled echo cancellation stage is in the rack.
@@ -432,8 +439,11 @@ fn dsp_loop(
                 frame[1] = s;
             }
             output.push_slice(&stereo);
+        } else if input.occupied_len() >= FRAME {
+            thread::sleep(Duration::from_millis(2)); // the render side is behind; it frees room soon
         } else {
-            thread::sleep(Duration::from_millis(2));
+            // The capture thread unparks us with the next block; the timeout only bounds a stall.
+            thread::park_timeout(Duration::from_millis(10));
         }
     }
     Ok(())
